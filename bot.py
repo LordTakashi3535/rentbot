@@ -14,6 +14,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Привет! Я бот по аренде машин 🚗")
 
 # запуск бота
-app = ApplicationBuilder().token("ТВОЙ_ТОКЕН_ОТ_BOTFATHER").build()
+app = ApplicationBuilder().token("7687270340:AAGDQLlEZwhDp99s-j0vxDrCTO-U8JmbGJA").build()
 app.add_handler(CommandHandler("start", start))
 app.run_polling()
