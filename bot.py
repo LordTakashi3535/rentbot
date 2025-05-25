@@ -7,7 +7,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
 client = gspread.authorize(creds)
-sheet = client.open("ТвояТаблица").sheet1
+sheet = client.open("https://docs.google.com/spreadsheets/d/10RJvgX8t9qWQH3zIaCvp13uDHLQzfIB5ttQKT2kzCik").sheet1
 
 # /start команда
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
