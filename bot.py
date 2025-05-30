@@ -101,7 +101,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("📤 Расход", callback_data="add_expense")]
             ])
             await query.edit_message_text(text, reply_markup=keyboard)
-    except Exception as e:
+        except Exception as e:
             logger.error(f"Ошибка при выводе баланса: {e}")
             await query.message.reply_text("⚠️ Не удалось получить баланс.")
 
