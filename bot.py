@@ -135,8 +135,7 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
                     f"📅 Дата: `{now}`\n"
                     f"🏷 Категория: `{category}`\n"
                     f"💰 Сумма: `{amount}`\n"
-                    f"📝 Описание: `{description}`\n"
-                    f"📝 Баланс: `{balance}`"
+                    f"📝 Описание: `{description}`"
                 )
             else:
                 sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Расход")
@@ -145,8 +144,7 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
                     f"✅ Добавлено в *Расход*:\n\n"
                     f"📅 Дата: `{now}`\n"
                     f"💸 Сумма: `-{amount}`\n"
-                    f"📝 Описание: `{description}`\n"
-                    f"📝 Баланс: `{balance}`"
+                    f"📝 Описание: `{description}`"
                 )
 
             await update.message.reply_text(reply_text, parse_mode="Markdown")
