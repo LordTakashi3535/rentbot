@@ -56,7 +56,6 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data == "add_income":
         context.user_data.clear()
         context.user_data["action"] = "income_category"
-        # Показываем категории
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("Franky", callback_data="cat_franky")],
             [InlineKeyboardButton("Fraiz", callback_data="cat_fraiz")],
