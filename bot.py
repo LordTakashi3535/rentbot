@@ -81,14 +81,25 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["step"] = "amount"
         await query.edit_message_text("Введите сумму расхода:")
 
-    elif query.data == "balance":
+   elif query.data == "balance":
+    try:
         data = get_data()
         text = (
             f"💼 Баланс: {data.get('Баланс', '—')}\n"
             f"💳 Карта: {data.get('Карта', '—')}\n"
             f"💵 Наличные: {data.get('Наличные', '—')}"
         )
+
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📊 Баланс", callback_data="balance")],
+            [InlineKeyboardButton("📥 Доход", callback_data="add_income")],
+            [InlineKeyboardButton("📤 Расход", callback_data="add_expense")]
+        ])
+
         await query.message.reply_text(text, reply_markup=keyboard)
+    except Exception as e:
+        logger.error(f"Ошибка при выводе баланса: {e}")
+        await query.message.reply_text("⚠️ Не удалось получить баланс.")
         
 import datetime
 
@@ -126,7 +137,8 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
                     f"📅 Дата: `{now}`\n"
                     f"🏷 Категория: `{category}`\n"
                     f"💰 Сумма: `{amount}`\n"
-                    f"📝 Описание: `{description}`"
+                    f"📝 Описание: `{description}`\n"
+                    f"📝 Баланс: `{balance}`"
                 )
             else:
                 sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Расход")
@@ -134,8 +146,9 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
                 reply_text = (
                     f"✅ Добавлено в *Расход*:\n\n"
                     f"📅 Дата: `{now}`\n"
-                    f"💸 Сумма: -`{amount}`\n"
-                    f"📝 Описание: `{description}`"
+                    f"💸 Сумма: `-{amount}`\n"
+                    f"📝 Описание: `{description}`\n"
+                    f"📝 Баланс: `{balance}`"
                 )
 
             await update.message.reply_text(reply_text, parse_mode="Markdown")
