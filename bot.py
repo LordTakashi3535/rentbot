@@ -55,14 +55,32 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if query.data == "add_income":
         context.user_data.clear()
+        context.user_data["action"] = "income_category"
+        # Показываем категории
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Franky", callback_data="cat_franky")],
+            [InlineKeyboardButton("Fraiz", callback_data="cat_fraiz")],
+            [InlineKeyboardButton("Другое", callback_data="cat_other")]
+        ])
+        await query.edit_message_text("Выберите категорию дохода:", reply_markup=keyboard)
+
+    elif query.data in ["cat_franky", "cat_fraiz", "cat_other"]:
+        category_map = {
+            "cat_franky": "Franky",
+            "cat_fraiz": "Fraiz",
+            "cat_other": "Другое"
+        }
         context.user_data["action"] = "income"
+        context.user_data["category"] = category_map[query.data]
         context.user_data["step"] = "amount"
         await query.edit_message_text("Введите сумму дохода:")
+
     elif query.data == "add_expense":
         context.user_data.clear()
         context.user_data["action"] = "expense"
         context.user_data["step"] = "amount"
         await query.edit_message_text("Введите сумму расхода:")
+
     elif query.data == "balance":
         data = get_data()
         text = (
@@ -71,7 +89,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💵 Наличные: {data.get('Наличные', '—')}"
         )
         await query.edit_message_text(text=text)
-
+        
 import datetime
 
 async def handle_amount_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -79,7 +97,7 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
     action = context.user_data.get("action")
 
     if not action or not step:
-        return  # Игнорируем, если не в процессе ввода
+        return  # Пропустить, если нет процесса
 
     text = update.message.text.strip()
 
@@ -90,20 +108,24 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
             context.user_data["step"] = "description"
             await update.message.reply_text("Введите описание:")
         except ValueError:
-            await update.message.reply_text("⚠️ Пожалуйста, введите корректную сумму, например: 1500.00")
+            await update.message.reply_text("⚠️ Введите сумму, например: 1500.00")
+
     elif step == "description":
         description = text
-        amount = context.user_data.get("amount")
         now = datetime.datetime.now().strftime("%d.%m.%Y")
+        amount = context.user_data.get("amount")
+        category = context.user_data.get("category", "-")
 
         try:
             client = get_gspread_client()
-            sheet_name = "Доход" if action == "income" else "Расход"
-            sheet = client.open_by_key(SPREADSHEET_ID).worksheet(sheet_name)
-            # Записываем: дата, сумма, описание
-            sheet.append_row([now, amount, description])
+            if action == "income":
+                sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Доход")
+                sheet.append_row([now, category, amount, description])
+            else:
+                sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Расход")
+                sheet.append_row([now, amount, description])  # расход без категории
 
-            await update.message.reply_text(f"✅ Данные успешно добавлены в '{sheet_name}'.")
+            await update.message.reply_text("✅ Данные успешно добавлены.")
             context.user_data.clear()
         except Exception as e:
             logger.error(f"Ошибка записи в таблицу: {e}")
