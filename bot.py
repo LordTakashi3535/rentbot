@@ -88,22 +88,22 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("Введите сумму расхода:")
 
     elif query.data == "balance":
-    try:
-        data = get_data()
-        text = (
-            f"💼 Баланс: {data.get('Баланс', '—')}\n"
-            f"💳 Карта: {data.get('Карта', '—')}\n"
-            f"💵 Наличные: {data.get('Наличные', '—')}"
-        )
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📊 Баланс", callback_data="balance")],
-            [InlineKeyboardButton("📥 Доход", callback_data="add_income")],
-            [InlineKeyboardButton("📤 Расход", callback_data="add_expense")]
-        ])
-        await query.edit_message_text(text, reply_markup=keyboard)
+        try:
+            data = get_data()
+            text = (
+                f"💼 Баланс: {data.get('Баланс', '—')}\n"
+                f"💳 Карта: {data.get('Карта', '—')}\n"
+                f"💵 Наличные: {data.get('Наличные', '—')}"
+            )
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("📊 Баланс", callback_data="balance")],
+                [InlineKeyboardButton("📥 Доход", callback_data="add_income")],
+                [InlineKeyboardButton("📤 Расход", callback_data="add_expense")]
+            ])
+            await query.edit_message_text(text, reply_markup=keyboard)
     except Exception as e:
         logger.error(f"Ошибка при выводе баланса: {e}")
-        await query.message.reply_text("⚠️ Не удалось получить баланс.")
+            await query.message.reply_text("⚠️ Не удалось получить баланс.")
 
 # Обработка ввода суммы и описания
 async def handle_amount_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
