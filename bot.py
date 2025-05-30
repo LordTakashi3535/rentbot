@@ -144,6 +144,31 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Ошибка получения страховок: {e}")
             await query.message.reply_text("⚠️ Не удалось получить данные по страховкам.")
+    elif data == "tech":
+        try:
+            sheet = get_gspread_client().open_by_key(SPREADSHEET_ID).worksheet("ТехОсмотры")
+            rows = sheet.get_all_values()[1:]  # пропускаем заголовок
+            if not rows:
+                keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="menu")]])
+                await query.edit_message_text("🧰 Тех.Осмотры не найдены.", reply_markup=keyboard)
+                return
+    
+            text = "🧰 Тех.Осмотры:\n"
+            for i, row in enumerate(rows):
+                if len(row) >= 2:
+                    text += f"{i+1}. {row[0]} до {row[1]}\n"
+                else:
+                    text += f"{i+1}. {row[0]} — дата не указана\n"
+    
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("✏️ Изменить", callback_data="edit_tech")],
+                [InlineKeyboardButton("⬅️ Назад", callback_data="menu")]
+            ])
+    
+            await query.edit_message_text(text, reply_markup=keyboard)
+        except Exception as e:
+            logger.error(f"Ошибка получения тех.осмотров: {e}")
+            await query.message.reply_text("⚠️ Не удалось получить данные по тех.осмотрам.")
 
     elif data == "edit_insurance":
         context.user_data["edit_type"] = "insurance"
