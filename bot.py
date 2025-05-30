@@ -97,6 +97,7 @@ def main():
     app = ApplicationBuilder().token(Telegram_Token).build()
     app.add_handler(CommandHandler("menu", menu_command))
     app.add_handler(CallbackQueryHandler(handle_button))
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_amount))
 
     logger.info("✅ Бот запущен")
     app.run_polling()
