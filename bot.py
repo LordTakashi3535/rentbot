@@ -111,18 +111,21 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
     action = context.user_data.get("action")
 
     if not action or not step:
-        return  # Пропустить, если нет процесса
+        return
 
-    text = update.message.text.strip()
+    user_message = update.message
+    text = user_message.text.strip()
 
     if step == "amount":
         try:
             amount = float(text.replace(",", "."))
             context.user_data["amount"] = amount
             context.user_data["step"] = "description"
-            await update.message.reply_text("Введите описание:")
+
+            await user_message.delete()  # Удаляем сообщение с суммой
+            await user_message.chat.send_message("Введите описание:")
         except ValueError:
-            await update.message.reply_text("⚠️ Введите корректную сумму, например: 1500.00")
+            await user_message.reply_text("⚠️ Введите корректную сумму, например: 1500.00")
 
     elif step == "description":
         description = text
@@ -142,7 +145,7 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
                     f"💰 Сумма: `{amount}`\n"
                     f"📝 Описание: `{description}`"
                 )
-            else:  # expense
+            else:
                 sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Расход")
                 sheet.append_row([now, amount, description])
                 reply_text = (
@@ -152,7 +155,7 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
                     f"📝 Описание: `{description}`"
                 )
 
-            # Получаем данные баланса из листа "Сводка"
+            # Баланс из "Сводка"
             summary_sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Сводка")
             summary_data = summary_sheet.get_all_values()
             summary_dict = {row[0].strip(): row[1].strip() for row in summary_data if len(row) >= 2}
@@ -166,18 +169,19 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
 
             reply_text += balance_text
 
-            # Кнопки "Доход" и "Расход"
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("📥 Доход", callback_data="add_income")],
                 [InlineKeyboardButton("📤 Расход", callback_data="add_expense")]
             ])
 
-            await update.message.reply_text(reply_text, parse_mode="Markdown", reply_markup=keyboard)
+            await user_message.delete()  # Удаляем сообщение с описанием
+            await user_message.chat.send_message(reply_text, parse_mode="Markdown", reply_markup=keyboard)
             context.user_data.clear()
 
         except Exception as e:
             logger.error(f"Ошибка записи в таблицу: {e}")
-            await update.message.reply_text("❌ Ошибка при записи данных. Попробуйте позже.")
+            await user_message.reply_text("❌ Ошибка при записи данных. Попробуйте позже.")
+
 
 # Основная функция
 def main():
