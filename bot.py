@@ -5,7 +5,7 @@ import logging
 import gspread
 import asyncio
 from oauth2client.service_account import ServiceAccountCredentials
-from telegram import Update, Bot
+from telegram import Update, Bot, ReplyKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
@@ -66,7 +66,20 @@ async def auto_update_menu(bot: Bot, chat_id: int, message_id: int):
 # Команда /start запускает меню и автообновление
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = get_menu_text()
-    message = await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+
+    # Reply-клавиатура (отображается под вводом текста)
+    keyboard = [
+        ["💰 Заработано", "📉 Расход"],
+        ["📈 Доход", "💼 Баланс"],
+        ["💳 Карта", "💵 Наличные"]
+    ]
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+    message = await update.message.reply_text(
+        text,
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=reply_markup
+    )
 
     chat_id = message.chat_id
     message_id = message.message_id
