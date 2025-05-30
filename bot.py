@@ -3,7 +3,6 @@ import json
 import base64
 import logging
 import gspread
-import asyncio
 from oauth2client.service_account import ServiceAccountCredentials
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
@@ -30,50 +29,40 @@ def get_data():
         data = {row[0].strip(): row[1].strip() for row in rows if len(row) >= 2}
         return data
     except Exception as e:
-        logger.error(f"Ошибка при получении данных: {e}")
+        logger.error(f"Ошибка при получении данных из Google Sheets: {e}")
         return {}
 
-def build_main_keyboard():
-    keyboard = [["Финансовый отчёт"]]
+def build_keyboard():
+    keyboard = [["Баланс"]]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-def build_report_text(data):
-    return (
-        f"📊 *Финансовый отчёт:*\n"
-        f"🔹 Начальная сумма: {data.get('Начальная сумма', '—')}\n"
-        f"💰 Заработано: {data.get('Заработано', '—')}\n"
-        f"📈 Доход: {data.get('Доход', '—')}\n"
-        f"📉 Расход: {data.get('Расход', '—')}\n"
-        f"💼 Баланс: {data.get('Баланс', '—')}\n"
-        f"💳 Карта: {data.get('Карта', '—')}\n"
-        f"💵 Наличные: {data.get('Наличные', '—')}"
-    )
-
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = build_main_keyboard()
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = build_keyboard()
     await update.message.reply_text(
-        "Меню:",
+        "Привет! Выбери кнопку ниже:",
         reply_markup=keyboard
     )
 
-async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
-    if text == "Финансовый отчёт":
+    if text == "Баланс":
         data = get_data()
-        report = build_report_text(data)
-        await update.message.reply_text(report, parse_mode="Markdown")
+        balance = data.get("Баланс", "Данные отсутствуют")
+        await update.message.reply_text(f"💼 Баланс: {balance}")
     else:
-        await update.message.reply_text("Пожалуйста, выберите пункт меню.")
+        await update.message.reply_text("Пожалуйста, выберите кнопку из меню.")
 
 def main():
     if not TELEGRAM_TOKEN:
         raise Exception("Переменная Telegram_Token не найдена")
+    if not GOOGLE_CREDENTIALS_B64:
+        raise Exception("Переменная GOOGLE_CREDENTIALS_B64 не найдена")
 
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), message_handler))
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
 
-    print("🤖 Бот запущен.")
+    logger.info("🤖 Бот запущен.")
     app.run_polling()
 
 if __name__ == "__main__":
