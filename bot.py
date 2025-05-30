@@ -10,7 +10,10 @@ from telegram.ext import (
     ContextTypes,
     CommandHandler,
     CallbackQueryHandler,
+    MessageHandler,
+    filters,
 )
+import datetime
 
 # Логирование
 logging.basicConfig(level=logging.INFO)
@@ -25,7 +28,10 @@ SPREADSHEET_ID = "1qjVJZUqm1hT5IkrASq-_iL9cc4wDl8fdjvd7KDMWL-U"
 def get_gspread_client():
     creds_json = base64.b64decode(GOOGLE_CREDENTIALS_B64).decode("utf-8")
     creds_dict = json.loads(creds_json)
-    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+    scope = [
+        "https://spreadsheets.google.com/feeds",
+        "https://www.googleapis.com/auth/drive",
+    ]
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     return gspread.authorize(creds)
 
@@ -48,6 +54,7 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("📤 Расход", callback_data="add_expense")]
     ])
     await update.message.reply_text("Выберите действие:", reply_markup=keyboard)
+
 # Обработка нажатий кнопок
 async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -81,7 +88,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("Введите сумму расхода:")
 
     elif query.data == "balance":
-        try:
+    try:
         data = get_data()
         text = (
             f"💼 Баланс: {data.get('Баланс', '—')}\n"
@@ -93,13 +100,12 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("📥 Доход", callback_data="add_income")],
             [InlineKeyboardButton("📤 Расход", callback_data="add_expense")]
         ])
-        await query.message.reply_text(text, reply_markup=keyboard)
+        await query.edit_message_text(text, reply_markup=keyboard)
     except Exception as e:
         logger.error(f"Ошибка при выводе баланса: {e}")
         await query.message.reply_text("⚠️ Не удалось получить баланс.")
-        
-import datetime
 
+# Обработка ввода суммы и описания
 async def handle_amount_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
     step = context.user_data.get("step")
     action = context.user_data.get("action")
@@ -111,12 +117,12 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
 
     if step == "amount":
         try:
-            amount = float(text)
+            amount = float(text.replace(",", "."))
             context.user_data["amount"] = amount
             context.user_data["step"] = "description"
             await update.message.reply_text("Введите описание:")
         except ValueError:
-            await update.message.reply_text("⚠️ Введите сумму, например: 1500.00")
+            await update.message.reply_text("⚠️ Введите корректную сумму, например: 1500.00")
 
     elif step == "description":
         description = text
@@ -136,7 +142,7 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
                     f"💰 Сумма: `{amount}`\n"
                     f"📝 Описание: `{description}`"
                 )
-            else:
+            else:  # expense
                 sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Расход")
                 sheet.append_row([now, amount, description])
                 reply_text = (
@@ -153,8 +159,6 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
             await update.message.reply_text("❌ Ошибка при записи данных. Попробуйте позже.")
 
 # Основная функция
-from telegram.ext import MessageHandler, filters
-
 def main():
     if not Telegram_Token or not GOOGLE_CREDENTIALS_B64:
         raise Exception("Переменные окружения отсутствуют")
