@@ -2,115 +2,84 @@ import os
 import json
 import base64
 import logging
-import asyncio
 import gspread
+import asyncio
 from oauth2client.service_account import ServiceAccountCredentials
-from telegram import Update
+from telegram import Update, Bot
+from telegram.constants import ParseMode
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
+# Логирование
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Переменные окружения
 TELEGRAM_TOKEN = os.getenv("Telegram_Token")
 GOOGLE_CREDENTIALS_B64 = os.getenv("GOOGLE_CREDENTIALS_B64")
 SPREADSHEET_ID = "1qjVJZUqm1hT5IkrASq-_iL9cc4wDl8fdjvd7KDMWL-U"
 
+# Авторизация Google Sheets
 def get_gspread_client():
-    if not GOOGLE_CREDENTIALS_B64:
-        raise Exception("Переменная GOOGLE_CREDENTIALS_B64 не найдена")
-
     creds_json = base64.b64decode(GOOGLE_CREDENTIALS_B64).decode("utf-8")
     creds_dict = json.loads(creds_json)
-
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     return gspread.authorize(creds)
 
-def fetch_menu_data():
+# Получить текст меню
+def get_menu_text():
     try:
         client = get_gspread_client()
         sheet = client.open_by_key(SPREADSHEET_ID).sheet1
-        data = sheet.get_all_records()
-        # Предположим, что данные в таблице в формате:
-        # [{"Параметр": "Начальная сумма", "Значение": "10000"}, ...]
-        # Или просто возьмём нужные значения по названиям столбцов и строк.
+        rows = sheet.get_all_values()
+        data = {row[0].strip(): row[1].strip() for row in rows if len(row) >= 2}
 
-        # Для примера — возвращаем строку с параметрами:
-        # Здесь нужно подогнать под структуру твоей таблицы
-
-        start_sum = data[0].get("Начальная сумма", "0")
-        earned = data[0].get("Заработано", "0")
-        income = data[0].get("Доход", "0")
-        expense = data[0].get("Расход", "0")
-        balance = data[0].get("Баланс", "0")
-        card = data[0].get("Карта", "0")
-        cash = data[0].get("Наличные", "0")
-
-        menu_text = (
-            f"📊 *Статус Финансов:*\n"
-            f"Начальная сумма: {start_sum}\n"
-            f"Заработано: {earned}\n"
-            f"Доход: {income}\n"
-            f"Расход: {expense}\n"
-            f"Баланс: {balance}\n"
-            f"Карта: {card}\n"
-            f"Наличные: {cash}\n"
+        return (
+            f"📊 *Финансовый отчёт:*\n"
+            f"🔹 Начальная сумма: {data.get('Начальная сумма', '—')}\n"
+            f"💰 Заработано: {data.get('Заработано', '—')}\n"
+            f"📈 Доход: {data.get('Доход', '—')}\n"
+            f"📉 Расход: {data.get('Расход', '—')}\n"
+            f"💼 Баланс: {data.get('Баланс', '—')}\n"
+            f"💳 Карта: {data.get('Карта', '—')}\n"
+            f"💵 Наличные: {data.get('Наличные', '—')}"
         )
-        return menu_text
     except Exception as e:
-        logger.error(f"Ошибка Google Sheets: {e}")
-        return "Ошибка при загрузке данных из Google Sheets."
+        logger.exception("Ошибка при получении данных меню")
+        return "❌ Ошибка при загрузке данных из таблицы."
 
-# Команда для старта меню
-async def start_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    menu_text = fetch_menu_data()
+# Обновление сообщения с меню каждые 5 секунд
+async def auto_update_menu(bot: Bot, chat_id: int, message_id: int):
+    while True:
+        try:
+            text = get_menu_text()
+            await bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=text,
+                parse_mode=ParseMode.MARKDOWN,
+            )
+        except Exception as e:
+            logger.warning(f"Ошибка при обновлении меню: {e}")
+        await asyncio.sleep(5)
 
-    # Отправляем сообщение с меню и сохраняем ID сообщения
-    sent_message = await update.message.reply_text(menu_text, parse_mode="Markdown")
-    message_id = sent_message.message_id
+# Команда /start запускает меню и автообновление
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = get_menu_text()
+    message = await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 
-    # Сохраняем chat_id и message_id для обновления (можно в памяти, или базе)
-    context.chat_data["menu_message_id"] = message_id
+    chat_id = message.chat_id
+    message_id = message.message_id
 
-    # Запускаем цикл обновления меню (каждые 60 сек)
-    async def update_loop():
-        while True:
-            await asyncio.sleep(60)
-            new_text = fetch_menu_data()
-            try:
-                await context.bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=message_id,
-                    text=new_text,
-                    parse_mode="Markdown"
-                )
-            except Exception as e:
-                logger.error(f"Ошибка обновления меню: {e}")
-                # Можно прекратить обновлять если сообщение удалено
-                break
+    asyncio.create_task(auto_update_menu(context.bot, chat_id, message_id))
 
-    # Запускаем фоновую задачу
-    context.application.create_task(update_loop())
-
-async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        client = get_gspread_client()
-        sheet = client.open_by_key(SPREADSHEET_ID).sheet1
-        data = sheet.get_all_values()
-        preview = "\n".join([", ".join(row) for row in data[:10]]) or "Нет данных"
-        await update.message.reply_text(f"✅ Таблица подключена. Данные:\n{preview}")
-    except Exception as e:
-        logger.exception("Ошибка Google Sheets")
-        await update.message.reply_text(f"❌ Ошибка:\n{e}")
-
+# Старт бота
 def main():
     if not TELEGRAM_TOKEN:
         raise Exception("Переменная Telegram_Token не найдена")
 
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(CommandHandler("test", test_command))
-    app.add_handler(CommandHandler("menu", start_menu))  # команда для запуска меню
+    app.add_handler(CommandHandler("start", start_command))
 
     print("🤖 Бот запущен.")
     app.run_polling()
