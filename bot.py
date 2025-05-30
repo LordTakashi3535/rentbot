@@ -1,3 +1,27 @@
+import base64
+import json
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
+
+SPREADSHEET_ID = "1qjVJZUqm1hT5IkrASq-_iL9cc4wDl8fdjvd7KDMWL-U"
+
+def get_gspread_client():
+    creds_json = base64.b64decode(GOOGLE_CREDENTIALS_B64).decode("utf-8")
+    creds_dict = json.loads(creds_json)
+    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+    return gspread.authorize(creds)
+
+def get_data():
+    try:
+        client = get_gspread_client()
+        sheet = client.open_by_key(SPREADSHEET_ID).sheet1
+        rows = sheet.get_all_values()
+        return {row[0].strip(): row[1].strip() for row in rows if len(row) >= 2}
+    except Exception as e:
+        print(f"Ошибка получения данных из таблицы: {e}")
+        return {}
+        
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton, Update
 from telegram.ext import (
     ApplicationBuilder,
