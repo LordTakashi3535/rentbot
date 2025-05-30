@@ -4,8 +4,8 @@ import base64
 import logging
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-from telegram import Update, ReplyKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -32,25 +32,24 @@ def get_data():
         logger.error(f"Ошибка при получении данных из Google Sheets: {e}")
         return {}
 
-def build_keyboard():
-    keyboard = [["Баланс"]]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+def build_inline_keyboard():
+    keyboard = [[InlineKeyboardButton("💼 Баланс", callback_data="get_balance")]]
+    return InlineKeyboardMarkup(keyboard)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = build_keyboard()
     await update.message.reply_text(
-        "Привет! Выбери кнопку ниже:",
-        reply_markup=keyboard
+        "Привет! Нажми кнопку ниже, чтобы получить баланс:",
+        reply_markup=build_inline_keyboard()
     )
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-    if text == "Баланс":
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "get_balance":
         data = get_data()
         balance = data.get("Баланс", "Данные отсутствуют")
-        await update.message.reply_text(f"💼 Баланс: {balance}")
-    else:
-        await update.message.reply_text("Пожалуйста, выберите кнопку из меню.")
+        await query.edit_message_text(text=f"💼 Баланс: {balance}")
 
 def main():
     if not TELEGRAM_TOKEN:
@@ -60,7 +59,7 @@ def main():
 
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+    app.add_handler(CallbackQueryHandler(handle_callback))
 
     logger.info("🤖 Бот запущен.")
     app.run_polling()
