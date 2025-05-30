@@ -54,10 +54,14 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     if query.data == "add_income":
+        context.user_data.clear()
         context.user_data["action"] = "income"
+        context.user_data["step"] = "amount"
         await query.edit_message_text("Введите сумму дохода:")
     elif query.data == "add_expense":
+        context.user_data.clear()
         context.user_data["action"] = "expense"
+        context.user_data["step"] = "amount"
         await query.edit_message_text("Введите сумму расхода:")
     elif query.data == "balance":
         data = get_data()
@@ -67,29 +71,47 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💵 Наличные: {data.get('Наличные', '—')}"
         )
         await query.edit_message_text(text=text)
+
 import datetime
-from telegram.ext import MessageHandler, filters
 
-async def handle_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_amount_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    step = context.user_data.get("step")
     action = context.user_data.get("action")
-    if not action:
-        return  # Игнорировать, если пользователь не выбрал доход/расход
 
-    try:
-        amount = float(update.message.text)
+    if not action or not step:
+        return  # Игнорируем, если не в процессе ввода
+
+    text = update.message.text.strip()
+
+    if step == "amount":
+        try:
+            amount = float(text)
+            context.user_data["amount"] = amount
+            context.user_data["step"] = "description"
+            await update.message.reply_text("Введите описание:")
+        except ValueError:
+            await update.message.reply_text("⚠️ Пожалуйста, введите корректную сумму, например: 1500.00")
+    elif step == "description":
+        description = text
+        amount = context.user_data.get("amount")
         now = datetime.datetime.now().strftime("%d.%m.%Y")
 
-        # Запись в Google Таблицу
-        client = get_gspread_client()
-        sheet = client.open_by_key(SPREADSHEET_ID).sheet1
-        sheet.append_row([now, "Доход" if action == "income" else "Расход", str(amount)])
+        try:
+            client = get_gspread_client()
+            sheet_name = "Доход" if action == "income" else "Расход"
+            sheet = client.open_by_key(SPREADSHEET_ID).worksheet(sheet_name)
+            # Записываем: дата, сумма, описание
+            sheet.append_row([now, amount, description])
 
-        await update.message.reply_text("✅ Данные добавлены.")
-        context.user_data.clear()
-    except ValueError:
-        await update.message.reply_text("⚠️ Введите число, например: 1500.00")        
+            await update.message.reply_text(f"✅ Данные успешно добавлены в '{sheet_name}'.")
+            context.user_data.clear()
+        except Exception as e:
+            logger.error(f"Ошибка записи в таблицу: {e}")
+            await update.message.reply_text("❌ Ошибка при записи данных. Попробуйте позже.")
 
 # Основная функция
+from telegram.ext import MessageHandler, filters
+
 def main():
     if not Telegram_Token or not GOOGLE_CREDENTIALS_B64:
         raise Exception("Переменные окружения отсутствуют")
@@ -97,7 +119,7 @@ def main():
     app = ApplicationBuilder().token(Telegram_Token).build()
     app.add_handler(CommandHandler("menu", menu_command))
     app.add_handler(CallbackQueryHandler(handle_button))
-    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_amount))
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_amount_description))
 
     logger.info("✅ Бот запущен")
     app.run_polling()
