@@ -35,11 +35,11 @@ def get_gspread_client():
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     return gspread.authorize(creds)
 
-# Получение данных из таблицы
+# Получение данных из таблицы (например, для баланса)
 def get_data():
     try:
         client = get_gspread_client()
-        sheet = client.open_by_key(SPREADSHEET_ID).sheet1
+        sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Сводка")
         rows = sheet.get_all_values()
         return {row[0].strip(): row[1].strip() for row in rows if len(row) >= 2}
     except Exception as e:
@@ -57,45 +57,65 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ])
     await update.message.reply_text("Выберите действие:", reply_markup=keyboard)
 
+# Кнопка отмены
+def cancel_keyboard():
+    return InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="cancel")]])
+
 # Обработка нажатий кнопок
 async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    if query.data == "add_income":
+    data = query.data
+
+    if data == "cancel":
+        context.user_data.clear()
+        await query.edit_message_text("Действие отменено. Возврат в меню.")
+        return await menu_command(update, context)
+
+    if data == "menu":
+        context.user_data.clear()
+        return await menu_command(update, context)
+
+    if data == "add_income":
         context.user_data.clear()
         context.user_data["action"] = "income_category"
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("Franky", callback_data="cat_franky")],
             [InlineKeyboardButton("Fraiz", callback_data="cat_fraiz")],
-            [InlineKeyboardButton("Другое", callback_data="cat_other")]
+            [InlineKeyboardButton("Другое", callback_data="cat_other")],
+            [InlineKeyboardButton("❌ Отмена", callback_data="cancel")]
         ])
         await query.edit_message_text("Выберите категорию дохода:", reply_markup=keyboard)
 
-    elif query.data in ["cat_franky", "cat_fraiz", "cat_other"]:
+    elif data in ["cat_franky", "cat_fraiz", "cat_other"]:
         category_map = {
             "cat_franky": "Franky",
             "cat_fraiz": "Fraiz",
             "cat_other": "Другое"
         }
         context.user_data["action"] = "income"
-        context.user_data["category"] = category_map[query.data]
+        context.user_data["category"] = category_map[data]
         context.user_data["step"] = "amount"
-        await query.edit_message_text("Введите сумму дохода:")
+        await query.edit_message_text("Введите сумму дохода:", reply_markup=cancel_keyboard())
 
-    elif query.data == "add_expense":
+    elif data == "add_expense":
         context.user_data.clear()
         context.user_data["action"] = "expense"
         context.user_data["step"] = "amount"
-        await query.edit_message_text("Введите сумму расхода:")
+        await query.edit_message_text("Введите сумму расхода:", reply_markup=cancel_keyboard())
         
-    elif query.data == "insurance":
+    elif data == "insurance":
         try:
             sheet = get_gspread_client().open_by_key(SPREADSHEET_ID).worksheet("Страховки")
             rows = sheet.get_all_values()[1:]  # пропустить заголовок
+            if not rows:
+                await query.edit_message_text("🚗 Страховки не найдены.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="menu")]]))
+                return
             text = "🚗 *Страховки:*\n"
             for row in rows:
-                text += f"• `{row[0]}` до `{row[1]}`\n"
+                if len(row) >= 2:
+                    text += f"• `{row[0]}` до `{row[1]}`\n"
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("✏️ Изменить", callback_data="edit_insurance")],
                 [InlineKeyboardButton("⬅️ Назад", callback_data="menu")]
@@ -105,13 +125,17 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Ошибка получения страховок: {e}")
             await query.message.reply_text("⚠️ Не удалось получить данные по страховкам.")
 
-    elif query.data == "tech":
+    elif data == "tech":
         try:
             sheet = get_gspread_client().open_by_key(SPREADSHEET_ID).worksheet("Техосмотры")
             rows = sheet.get_all_values()[1:]
+            if not rows:
+                await query.edit_message_text("🛠 Техосмотры не найдены.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="menu")]]))
+                return
             text = "🛠 *Тех. Осмотры:*\n"
             for row in rows:
-                text += f"• `{row[0]}` до `{row[1]}`\n"
+                if len(row) >= 2:
+                    text += f"• `{row[0]}` до `{row[1]}`\n"
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("✏️ Изменить", callback_data="edit_tech")],
                 [InlineKeyboardButton("⬅️ Назад", callback_data="menu")]
@@ -120,16 +144,16 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Ошибка получения техосмотров: {e}")
             await query.message.reply_text("⚠️ Не удалось получить данные по техосмотрам.")
-    elif query.data == "edit_insurance":
+
+    elif data == "edit_insurance":
         context.user_data["edit_type"] = "insurance"
-        await query.edit_message_text("Введите название машины и новую дату через тире (например: Toyota - 01.09.2025)")
+        await query.edit_message_text("Введите название машины и новую дату через тире (например: Toyota - 01.09.2025)", reply_markup=cancel_keyboard())
 
-    elif query.data == "edit_tech":
+    elif data == "edit_tech":
         context.user_data["edit_type"] = "tech"
-        await query.edit_message_text("Введите название машины и новую дату через тире (например: BMW - 15.10.2025)")
-
+        await query.edit_message_text("Введите название машины и новую дату через тире (например: BMW - 15.10.2025)", reply_markup=cancel_keyboard())
             
-    elif query.data == "balance":
+    elif data == "balance":
         try:
             data = get_data()
             text = (
@@ -140,17 +164,19 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("📊 Баланс", callback_data="balance")],
                 [InlineKeyboardButton("📥 Доход", callback_data="add_income")],
-                [InlineKeyboardButton("📤 Расход", callback_data="add_expense")]
+                [InlineKeyboardButton("📤 Расход", callback_data="add_expense")],
+                [InlineKeyboardButton("⬅️ Назад", callback_data="menu")]
             ])
             await query.edit_message_text(text, reply_markup=keyboard)
         except Exception as e:
             logger.error(f"Ошибка при выводе баланса: {e}")
             await query.message.reply_text("⚠️ Не удалось получить баланс.")
 
-# Обработка ввода суммы и описания
+# Обработка ввода суммы, описания и редактирования дат
 async def handle_amount_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if "edit_type" in context.user_data:
         edit_type = context.user_data.pop("edit_type")
+        text = update.message.text.strip()
         try:
             name, new_date = map(str.strip, text.split("-", 1))
             sheet_name = "Страховки" if edit_type == "insurance" else "Техосмотры"
@@ -158,7 +184,7 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
             rows = sheet.get_all_values()
 
             for i, row in enumerate(rows):
-                if row[0].lower() == name.lower():
+                if row and row[0].lower() == name.lower():
                     sheet.update_cell(i + 1, 2, new_date)
                     await update.message.reply_text(f"✅ Дата обновлена:\n{name} — {new_date}")
                     return
@@ -167,10 +193,18 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
             logger.error(f"Ошибка при обновлении даты: {e}")
             await update.message.reply_text("❌ Ошибка обновления. Формат: Название - Дата")
         return
+
+    # Если пользователь нажал отмену (через кнопку)
+    if update.message.text.strip().lower() == "отмена":
+        context.user_data.clear()
+        await update.message.reply_text("Действие отменено.")
+        return await menu_command(update, context)
+
     step = context.user_data.get("step")
     action = context.user_data.get("action")
 
     if not action or not step:
+        # Нет активного действия, игнорируем
         return
 
     user_message = update.message
@@ -179,13 +213,15 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
     if step == "amount":
         try:
             amount = float(text.replace(",", "."))
+            if amount <= 0:
+                raise ValueError("Сумма должна быть положительной")
             context.user_data["amount"] = amount
             context.user_data["step"] = "description"
 
             await user_message.delete()  # Удаляем сообщение с суммой
-            await user_message.chat.send_message("Введите описание:")
+            await user_message.chat.send_message("Введите описание:", reply_markup=cancel_keyboard())
         except ValueError:
-            await user_message.reply_text("⚠️ Введите корректную сумму, например: 1500.00")
+            await user_message.reply_text("⚠️ Введите корректную положительную сумму, например: 1500.00")
 
     elif step == "description":
         description = text
@@ -231,7 +267,8 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
 
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("📥 Доход", callback_data="add_income")],
-                [InlineKeyboardButton("📤 Расход", callback_data="add_expense")]
+                [InlineKeyboardButton("📤 Расход", callback_data="add_expense")],
+                [InlineKeyboardButton("⬅️ В меню", callback_data="menu")]
             ])
 
             await user_message.delete()  # Удаляем сообщение с описанием
@@ -241,7 +278,6 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
         except Exception as e:
             logger.error(f"Ошибка записи в таблицу: {e}")
             await user_message.reply_text("❌ Ошибка при записи данных. Попробуйте позже.")
-
 
 # Основная функция
 def main():
