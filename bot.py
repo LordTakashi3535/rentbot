@@ -64,10 +64,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # 🧠 Основная функция
 def main():
-    if not TELEGRAM_TOKEN or not GOOGLE_CREDENTIALS_B64:
+    if not Telegram_Token or not GOOGLE_CREDENTIALS_B64:
         raise Exception("Переменные окружения отсутствуют")
 
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    app = ApplicationBuilder().token(Telegram_Token).build()
     app.add_handler(CommandHandler("start", start))
 
     logger.info("✅ Бот запущен")
