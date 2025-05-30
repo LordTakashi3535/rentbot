@@ -53,7 +53,7 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("📥 Доход", callback_data="add_income")],
         [InlineKeyboardButton("📤 Расход", callback_data="add_expense")],
         [InlineKeyboardButton("🛡 Страховки", callback_data="insurance")],
-        [InlineKeyboardButton("🔧 Тех.Осмотры", callback_data="inspection")]
+        [InlineKeyboardButton("🧰 Тех.Осмотры", callback_data="tech")]
     ])
     await update.message.reply_text("Выберите действие:", reply_markup=keyboard)
 
@@ -91,31 +91,43 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     elif query.data == "insurance":
         try:
-            client = get_gspread_client()
-            sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Страховки")
-            rows = sheet.get_all_values()
-            text = "🛡 *Страховки:*\n"
-            for row in rows[1:]:  # Пропустить заголовок
-                if len(row) >= 2:
-                    text += f"🚗 {row[0]} — до {row[1]}\n"
-            await query.edit_message_text(text, parse_mode="Markdown", reply_markup=keyboard)
+            sheet = get_gspread_client().open_by_key(SPREADSHEET_ID).worksheet("Страховки")
+            rows = sheet.get_all_values()[1:]  # пропустить заголовок
+            text = "🚗 *Страховки:*\n"
+            for row in rows:
+                text += f"• `{row[0]}` до `{row[1]}`\n"
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("✏️ Изменить", callback_data="edit_insurance")],
+                [InlineKeyboardButton("⬅️ Назад", callback_data="menu")]
+            ])
+            await query.edit_message_text(text, reply_markup=keyboard, parse_mode="Markdown")
         except Exception as e:
-            logger.error(f"Ошибка при получении данных по страховкам: {e}")
+            logger.error(f"Ошибка получения страховок: {e}")
             await query.message.reply_text("⚠️ Не удалось получить данные по страховкам.")
 
-    elif query.data == "inspection":
+    elif query.data == "tech":
         try:
-            client = get_gspread_client()
-            sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Техосмотры")
-            rows = sheet.get_all_values()
-            text = "🔧 *Тех.Осмотры:*\n"
-            for row in rows[1:]:
-                if len(row) >= 2:
-                    text += f"🚗 {row[0]} — до {row[1]}\n"
-            await query.edit_message_text(text, parse_mode="Markdown", reply_markup=keyboard)
+            sheet = get_gspread_client().open_by_key(SPREADSHEET_ID).worksheet("Техосмотры")
+            rows = sheet.get_all_values()[1:]
+            text = "🛠 *Тех. Осмотры:*\n"
+            for row in rows:
+                text += f"• `{row[0]}` до `{row[1]}`\n"
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("✏️ Изменить", callback_data="edit_tech")],
+                [InlineKeyboardButton("⬅️ Назад", callback_data="menu")]
+            ])
+            await query.edit_message_text(text, reply_markup=keyboard, parse_mode="Markdown")
         except Exception as e:
-            logger.error(f"Ошибка при получении данных по техосмотрам: {e}")
-            await query.message.reply_text("⚠️ Не удалось получить данные по тех.осмотрам.")
+            logger.error(f"Ошибка получения техосмотров: {e}")
+            await query.message.reply_text("⚠️ Не удалось получить данные по техосмотрам.")
+    elif query.data == "edit_insurance":
+        context.user_data["edit_type"] = "insurance"
+        await query.edit_message_text("Введите название машины и новую дату через тире (например: Toyota - 01.09.2025)")
+
+    elif query.data == "edit_tech":
+        context.user_data["edit_type"] = "tech"
+        await query.edit_message_text("Введите название машины и новую дату через тире (например: BMW - 15.10.2025)")
+
             
     elif query.data == "balance":
         try:
@@ -137,6 +149,24 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Обработка ввода суммы и описания
 async def handle_amount_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if "edit_type" in context.user_data:
+        edit_type = context.user_data.pop("edit_type")
+        try:
+            name, new_date = map(str.strip, text.split("-", 1))
+            sheet_name = "Страховки" if edit_type == "insurance" else "Техосмотры"
+            sheet = get_gspread_client().open_by_key(SPREADSHEET_ID).worksheet(sheet_name)
+            rows = sheet.get_all_values()
+
+            for i, row in enumerate(rows):
+                if row[0].lower() == name.lower():
+                    sheet.update_cell(i + 1, 2, new_date)
+                    await update.message.reply_text(f"✅ Дата обновлена:\n{name} — {new_date}")
+                    return
+            await update.message.reply_text("🚫 Машина не найдена.")
+        except Exception as e:
+            logger.error(f"Ошибка при обновлении даты: {e}")
+            await update.message.reply_text("❌ Ошибка обновления. Формат: Название - Дата")
+        return
     step = context.user_data.get("step")
     action = context.user_data.get("action")
 
