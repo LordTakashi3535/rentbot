@@ -121,11 +121,24 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
             if action == "income":
                 sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Доход")
                 sheet.append_row([now, category, amount, description])
+                reply_text = (
+                    f"✅ Добавлено в *Доход*:\n\n"
+                    f"📅 Дата: `{now}`\n"
+                    f"🏷 Категория: `{category}`\n"
+                    f"💰 Сумма: `{amount}`\n"
+                    f"📝 Описание: `{description}`"
+                )
             else:
                 sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Расход")
-                sheet.append_row([now, amount, description])  # расход без категории
+                sheet.append_row([now, amount, description])
+                reply_text = (
+                    f"✅ Добавлено в *Расход*:\n\n"
+                    f"📅 Дата: `{now}`\n"
+                    f"💸 Сумма: `{amount}`\n"
+                    f"📝 Описание: `{description}`"
+                )
 
-            await update.message.reply_text("✅ Данные успешно добавлены.")
+            await update.message.reply_text(reply_text, parse_mode="Markdown")
             context.user_data.clear()
         except Exception as e:
             logger.error(f"Ошибка записи в таблицу: {e}")
