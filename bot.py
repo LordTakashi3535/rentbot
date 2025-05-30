@@ -43,29 +43,51 @@ def get_data():
 # Команда /menu
 async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Баланс", callback_data="balance")],
-        [InlineKeyboardButton("Карта", callback_data="card")],
-        [InlineKeyboardButton("Наличные", callback_data="cash")]
+        [InlineKeyboardButton("📊 Баланс", callback_data="balance")],
+        [InlineKeyboardButton("📥 Доход", callback_data="add_income")],
+        [InlineKeyboardButton("📤 Расход", callback_data="add_expense")]
     ])
-    await update.message.reply_text("Выберите пункт отчёта:", reply_markup=keyboard)
-
+    await update.message.reply_text("Выберите действие:", reply_markup=keyboard)
 # Обработка нажатий кнопок
 async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    data = get_data()
+    if query.data == "add_income":
+        context.user_data["action"] = "income"
+        await query.edit_message_text("Введите сумму дохода:")
+    elif query.data == "add_expense":
+        context.user_data["action"] = "expense"
+        await query.edit_message_text("Введите сумму расхода:")
+    elif query.data == "balance":
+        data = get_data()
+        text = (
+            f"💼 Баланс: {data.get('Баланс', '—')}\n"
+            f"💳 Карта: {data.get('Карта', '—')}\n"
+            f"💵 Наличные: {data.get('Наличные', '—')}"
+        )
+        await query.edit_message_text(text=text)
+import datetime
+from telegram.ext import MessageHandler, filters
 
-    if query.data == "balance":
-        text = f"💼 Баланс: {data.get('Баланс', '—')}"
-    elif query.data == "card":
-        text = f"💳 Карта: {data.get('Карта', '—')}"
-    elif query.data == "cash":
-        text = f"💵 Наличные: {data.get('Наличные', '—')}"
-    else:
-        text = "Неизвестная команда."
+async def handle_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    action = context.user_data.get("action")
+    if not action:
+        return  # Игнорировать, если пользователь не выбрал доход/расход
 
-    await query.edit_message_text(text=text)
+    try:
+        amount = float(update.message.text)
+        now = datetime.datetime.now().strftime("%d.%m.%Y")
+
+        # Запись в Google Таблицу
+        client = get_gspread_client()
+        sheet = client.open_by_key(SPREADSHEET_ID).sheet1
+        sheet.append_row([now, "Доход" if action == "income" else "Расход", str(amount)])
+
+        await update.message.reply_text("✅ Данные добавлены.")
+        context.user_data.clear()
+    except ValueError:
+        await update.message.reply_text("⚠️ Введите число, например: 1500.00")        
 
 # Основная функция
 def main():
