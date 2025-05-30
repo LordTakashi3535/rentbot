@@ -55,7 +55,13 @@ async def main():
     print("🤖 Бот запущен.")
     await app.run_polling()
 
-# Запуск
 if __name__ == "__main__":
     import asyncio
-    asyncio.run(main())
+
+    try:
+        asyncio.get_event_loop().run_until_complete(main())
+    except RuntimeError:
+        # Если уже есть запущенный loop (например, в Render), просто запускаем main как таск
+        loop = asyncio.get_event_loop()
+        loop.create_task(main())
+        loop.run_forever()
