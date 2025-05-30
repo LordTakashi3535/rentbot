@@ -88,7 +88,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💳 Карта: {data.get('Карта', '—')}\n"
             f"💵 Наличные: {data.get('Наличные', '—')}"
         )
-        await query.edit_message_text(text=text)
+        await query.message.reply_text(text, reply_markup=keyboard)
         
 import datetime
 
@@ -134,7 +134,7 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
                 reply_text = (
                     f"✅ Добавлено в *Расход*:\n\n"
                     f"📅 Дата: `{now}`\n"
-                    f"💸 Сумма: `{amount}`\n"
+                    f"💸 Сумма: -`{amount}`\n"
                     f"📝 Описание: `{description}`"
                 )
 
