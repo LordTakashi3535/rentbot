@@ -51,7 +51,9 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("📊 Баланс", callback_data="balance")],
         [InlineKeyboardButton("📥 Доход", callback_data="add_income")],
-        [InlineKeyboardButton("📤 Расход", callback_data="add_expense")]
+        [InlineKeyboardButton("📤 Расход", callback_data="add_expense")],
+        [InlineKeyboardButton("🛡 Страховки", callback_data="insurance")],
+        [InlineKeyboardButton("🔧 Тех.Осмотры", callback_data="inspection")]
     ])
     await update.message.reply_text("Выберите действие:", reply_markup=keyboard)
 
@@ -86,7 +88,35 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["action"] = "expense"
         context.user_data["step"] = "amount"
         await query.edit_message_text("Введите сумму расхода:")
+        
+    elif query.data == "insurance":
+        try:
+            client = get_gspread_client()
+            sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Страховки")
+            rows = sheet.get_all_values()
+            text = "🛡 *Страховки:*\n"
+            for row in rows[1:]:  # Пропустить заголовок
+                if len(row) >= 2:
+                    text += f"🚗 {row[0]} — до {row[1]}\n"
+            await query.edit_message_text(text, parse_mode="Markdown", reply_markup=keyboard)
+        except Exception as e:
+            logger.error(f"Ошибка при получении данных по страховкам: {e}")
+            await query.message.reply_text("⚠️ Не удалось получить данные по страховкам.")
 
+    elif query.data == "inspection":
+        try:
+            client = get_gspread_client()
+            sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Техосмотры")
+            rows = sheet.get_all_values()
+            text = "🔧 *Тех.Осмотры:*\n"
+            for row in rows[1:]:
+                if len(row) >= 2:
+                    text += f"🚗 {row[0]} — до {row[1]}\n"
+            await query.edit_message_text(text, parse_mode="Markdown", reply_markup=keyboard)
+        except Exception as e:
+            logger.error(f"Ошибка при получении данных по техосмотрам: {e}")
+            await query.message.reply_text("⚠️ Не удалось получить данные по тех.осмотрам.")
+            
     elif query.data == "balance":
         try:
             data = get_data()
@@ -129,7 +159,7 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
 
     elif step == "description":
         description = text
-        now = datetime.datetime.now().strftime("%d.%m.%Y")
+        now = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
         amount = context.user_data.get("amount")
         category = context.user_data.get("category", "-")
 
