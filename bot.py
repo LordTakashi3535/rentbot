@@ -152,8 +152,29 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
                     f"📝 Описание: `{description}`"
                 )
 
-            await update.message.reply_text(reply_text, parse_mode="Markdown")
+            # Получаем данные баланса из листа "Сводка"
+            summary_sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Сводка")
+            summary_data = summary_sheet.get_all_values()
+            summary_dict = {row[0].strip(): row[1].strip() for row in summary_data if len(row) >= 2}
+
+            balance_text = (
+                f"\n\n📊 Текущий баланс:\n"
+                f"💼 Баланс: {summary_dict.get('Баланс', '—')}\n"
+                f"💳 Карта: {summary_dict.get('Карта', '—')}\n"
+                f"💵 Наличные: {summary_dict.get('Наличные', '—')}"
+            )
+
+            reply_text += balance_text
+
+            # Кнопки "Доход" и "Расход"
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("📥 Доход", callback_data="add_income")],
+                [InlineKeyboardButton("📤 Расход", callback_data="add_expense")]
+            ])
+
+            await update.message.reply_text(reply_text, parse_mode="Markdown", reply_markup=keyboard)
             context.user_data.clear()
+
         except Exception as e:
             logger.error(f"Ошибка записи в таблицу: {e}")
             await update.message.reply_text("❌ Ошибка при записи данных. Попробуйте позже.")
