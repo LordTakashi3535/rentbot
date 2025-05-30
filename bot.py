@@ -5,20 +5,16 @@ import logging
 import gspread
 import asyncio
 from oauth2client.service_account import ServiceAccountCredentials
-from telegram import Update, Bot, ReplyKeyboardMarkup
-from telegram.constants import ParseMode
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram import Update, ReplyKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
 
-# Логирование
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Переменные окружения
 TELEGRAM_TOKEN = os.getenv("Telegram_Token")
 GOOGLE_CREDENTIALS_B64 = os.getenv("GOOGLE_CREDENTIALS_B64")
 SPREADSHEET_ID = "1qjVJZUqm1hT5IkrASq-_iL9cc4wDl8fdjvd7KDMWL-U"
 
-# Авторизация Google Sheets
 def get_gspread_client():
     creds_json = base64.b64decode(GOOGLE_CREDENTIALS_B64).decode("utf-8")
     creds_dict = json.loads(creds_json)
@@ -26,73 +22,56 @@ def get_gspread_client():
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     return gspread.authorize(creds)
 
-# Получить текст меню
-def get_menu_text():
+def get_data():
     try:
         client = get_gspread_client()
         sheet = client.open_by_key(SPREADSHEET_ID).sheet1
         rows = sheet.get_all_values()
         data = {row[0].strip(): row[1].strip() for row in rows if len(row) >= 2}
-
-        return (
-            f"📊 *Финансовый отчёт:*\n"
-            f"🔹 Начальная сумма: {data.get('Начальная сумма', '—')}\n"
-            f"💰 Заработано: {data.get('Заработано', '—')}\n"
-            f"📈 Доход: {data.get('Доход', '—')}\n"
-            f"📉 Расход: {data.get('Расход', '—')}\n"
-            f"💼 Баланс: {data.get('Баланс', '—')}\n"
-            f"💳 Карта: {data.get('Карта', '—')}\n"
-            f"💵 Наличные: {data.get('Наличные', '—')}"
-        )
+        return data
     except Exception as e:
-        logger.exception("Ошибка при получении данных меню")
-        return "❌ Ошибка при загрузке данных из таблицы."
+        logger.error(f"Ошибка при получении данных: {e}")
+        return {}
 
-# Обновление сообщения с меню каждые 5 секунд
-async def auto_update_menu(bot: Bot, chat_id: int, message_id: int):
-    while True:
-        try:
-            text = get_menu_text()
-            await bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=message_id,
-                text=text,
-                parse_mode=ParseMode.MARKDOWN,
-            )
-        except Exception as e:
-            logger.warning(f"Ошибка при обновлении меню: {e}")
-        await asyncio.sleep(5)
+def build_main_keyboard():
+    keyboard = [["Финансовый отчёт"]]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-# Команда /start запускает меню и автообновление
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = get_menu_text()
-
-    # Reply-клавиатура (отображается под вводом текста)
-    keyboard = [
-        ["💰 Заработано", "📉 Расход"],
-        ["📈 Доход", "💼 Баланс"],
-        ["💳 Карта", "💵 Наличные"]
-    ]
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
-    message = await update.message.reply_text(
-        text,
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=reply_markup
+def build_report_text(data):
+    return (
+        f"📊 *Финансовый отчёт:*\n"
+        f"🔹 Начальная сумма: {data.get('Начальная сумма', '—')}\n"
+        f"💰 Заработано: {data.get('Заработано', '—')}\n"
+        f"📈 Доход: {data.get('Доход', '—')}\n"
+        f"📉 Расход: {data.get('Расход', '—')}\n"
+        f"💼 Баланс: {data.get('Баланс', '—')}\n"
+        f"💳 Карта: {data.get('Карта', '—')}\n"
+        f"💵 Наличные: {data.get('Наличные', '—')}"
     )
 
-    chat_id = message.chat_id
-    message_id = message.message_id
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = build_main_keyboard()
+    await update.message.reply_text(
+        "Меню:",
+        reply_markup=keyboard
+    )
 
-    asyncio.create_task(auto_update_menu(context.bot, chat_id, message_id))
+async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    if text == "Финансовый отчёт":
+        data = get_data()
+        report = build_report_text(data)
+        await update.message.reply_text(report, parse_mode="Markdown")
+    else:
+        await update.message.reply_text("Пожалуйста, выберите пункт меню.")
 
-# Старт бота
 def main():
     if not TELEGRAM_TOKEN:
         raise Exception("Переменная Telegram_Token не найдена")
 
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), message_handler))
 
     print("🤖 Бот запущен.")
     app.run_polling()
