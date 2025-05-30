@@ -1,19 +1,61 @@
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+import os
+import json
+import base64
+import logging
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-# Google Sheets подключение
-scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
-client = gspread.authorize(creds)
-sheet = client.open("https://docs.google.com/spreadsheets/d/10RJvgX8t9qWQH3zIaCvp13uDHLQzfIB5ttQKT2kzCik").sheet1
+# Настройка логов
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# /start команда
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Привет! Я бот по аренде машин 🚗")
+# Получение переменных окружения
+TELEGRAM_TOKEN = os.getenv("Telegram_Token")
+GOOGLE_CREDENTIALS_B64 = os.getenv("GOOGLE_CREDENTIALS_B64")
 
-# запуск бота
-app = ApplicationBuilder().token("7687270340:AAGDQLlEZwhDp99s-j0vxDrCTO-U8JmbGJA").build()
-app.add_handler(CommandHandler("start", start))
-app.run_polling()
+# ID таблицы
+SPREADSHEET_ID = "1qjVJZUqm1hT5IkrASq-_iL9cc4wDl8fdjvd7KDMWL-U"
+
+# Авторизация Google Sheets
+def get_gspread_client():
+    if not GOOGLE_CREDENTIALS_B64:
+        raise Exception("Не найдена переменная GOOGLE_CREDENTIALS_B64")
+    
+    creds_json = base64.b64decode(GOOGLE_CREDENTIALS_B64).decode("utf-8")
+    creds_dict = json.loads(creds_json)
+
+    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+    return gspread.authorize(creds)
+
+# Обработчик команды /test
+async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        client = get_gspread_client()
+        sheet = client.open_by_key(SPREADSHEET_ID).sheet1  # Первый лист
+        data = sheet.get_all_values()
+
+        # Преобразуем в текст (ограничим вывод до 10 строк для читаемости)
+        preview = "\n".join([", ".join(row) for row in data[:10]]) or "Нет данных"
+        await update.message.reply_text(f"✅ Таблица найдена! Данные:\n\n{preview}")
+    except Exception as e:
+        logger.exception("Ошибка при подключении к таблице")
+        await update.message.reply_text(f"❌ Ошибка при доступе к таблице:\n{str(e)}")
+
+# Основной запуск бота
+async def main():
+    if not TELEGRAM_TOKEN:
+        raise Exception("Telegram_Token не задан в переменных окружения.")
+    
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    app.add_handler(CommandHandler("test", test_command))
+
+    print("🤖 Бот запущен.")
+    await app.run_polling()
+
+# Запуск
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(main())
