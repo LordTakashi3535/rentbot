@@ -81,7 +81,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["step"] = "amount"
         await query.edit_message_text("Введите сумму расхода:")
 
-   elif query.data == "balance":
+    elif query.data == "balance":
         data = get_data()
         text = (
             f"💼 Баланс: {data.get('Баланс', '—')}\n"
