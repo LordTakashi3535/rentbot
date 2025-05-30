@@ -7,22 +7,21 @@ from oauth2client.service_account import ServiceAccountCredentials
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-# Настройка логов
+# Логирование
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Получение переменных окружения
+# Переменные окружения
 TELEGRAM_TOKEN = os.getenv("Telegram_Token")
 GOOGLE_CREDENTIALS_B64 = os.getenv("GOOGLE_CREDENTIALS_B64")
 
-# ID таблицы
 SPREADSHEET_ID = "1qjVJZUqm1hT5IkrASq-_iL9cc4wDl8fdjvd7KDMWL-U"
 
 # Авторизация Google Sheets
 def get_gspread_client():
     if not GOOGLE_CREDENTIALS_B64:
-        raise Exception("Не найдена переменная GOOGLE_CREDENTIALS_B64")
-    
+        raise Exception("Переменная GOOGLE_CREDENTIALS_B64 не найдена")
+
     creds_json = base64.b64decode(GOOGLE_CREDENTIALS_B64).decode("utf-8")
     creds_dict = json.loads(creds_json)
 
@@ -30,38 +29,29 @@ def get_gspread_client():
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     return gspread.authorize(creds)
 
-# Обработчик команды /test
+# Команда /test
 async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         client = get_gspread_client()
-        sheet = client.open_by_key(SPREADSHEET_ID).sheet1  # Первый лист
+        sheet = client.open_by_key(SPREADSHEET_ID).sheet1
         data = sheet.get_all_values()
-
-        # Преобразуем в текст (ограничим вывод до 10 строк для читаемости)
         preview = "\n".join([", ".join(row) for row in data[:10]]) or "Нет данных"
-        await update.message.reply_text(f"✅ Таблица найдена! Данные:\n\n{preview}")
+        await update.message.reply_text(f"✅ Таблица подключена. Данные:\n{preview}")
     except Exception as e:
-        logger.exception("Ошибка при подключении к таблице")
-        await update.message.reply_text(f"❌ Ошибка при доступе к таблице:\n{str(e)}")
+        logger.exception("Ошибка Google Sheets")
+        await update.message.reply_text(f"❌ Ошибка:\n{e}")
 
-# Основной запуск бота
-async def main():
+# 👇 Здесь мы просто запускаем Application без asyncio.run()
+def main():
     if not TELEGRAM_TOKEN:
-        raise Exception("Telegram_Token не задан в переменных окружения.")
-    
+        raise Exception("Переменная Telegram_Token не найдена")
+
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("test", test_command))
 
     print("🤖 Бот запущен.")
-    await app.run_polling()
+    app.run_polling()
 
 if __name__ == "__main__":
-    import asyncio
+    main()
 
-    try:
-        asyncio.get_event_loop().run_until_complete(main())
-    except RuntimeError:
-        # Если уже есть запущенный loop (например, в Render), просто запускаем main как таск
-        loop = asyncio.get_event_loop()
-        loop.create_task(main())
-        loop.run_forever()
