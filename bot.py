@@ -2,21 +2,22 @@ import os
 import json
 import base64
 import logging
-import asyncio
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-from telegram import Update
+from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
     ContextTypes,
     CommandHandler,
+    MessageHandler,
+    filters
 )
 
 # 🔧 Логирование
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# 🔐 Получение токенов
+# 🔐 Получение переменных окружения
 Telegram_Token = os.getenv("Telegram_Token")
 GOOGLE_CREDENTIALS_B64 = os.getenv("GOOGLE_CREDENTIALS_B64")
 SPREADSHEET_ID = "1qjVJZUqm1hT5IkrASq-_iL9cc4wDl8fdjvd7KDMWL-U"
@@ -40,27 +41,30 @@ def get_data():
         logger.error(f"Ошибка получения данных: {e}")
         return {}
 
-# 🔁 Цикл автообновления сообщения
-async def auto_update(bot, chat_id, message_id):
-    while True:
-        try:
-            data = get_data()
-            text = (
-                f"💼 Баланс: {data.get('Баланс', '—')}\n"
-                f"💳 Карта: {data.get('Карта', '—')}\n"
-                f"💵 Наличные: {data.get('Наличные', '—')}"
-            )
-            await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text)
-        except Exception as e:
-            logger.warning(f"Не удалось обновить сообщение: {e}")
-        await asyncio.sleep(5)
+# 🎛 Кнопки
+def build_keyboard():
+    return ReplyKeyboardMarkup(
+        [["Баланс", "Карта", "Наличные"]],
+        resize_keyboard=True
+    )
 
-# ▶️ Обработка команды запуска
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message = await update.message.reply_text("Загрузка отчета...")
-    chat_id = message.chat_id
-    message_id = message.message_id
-    asyncio.create_task(auto_update(context.bot, chat_id, message_id))
+# 📍 Команда /menu
+async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Выберите нужный пункт:", reply_markup=build_keyboard())
+
+# 📬 Обработка кнопок
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    data = get_data()
+
+    if text == "Баланс":
+        await update.message.reply_text(f"💼 Баланс: {data.get('Баланс', '—')}")
+    elif text == "Карта":
+        await update.message.reply_text(f"💳 Карта: {data.get('Карта', '—')}")
+    elif text == "Наличные":
+        await update.message.reply_text(f"💵 Наличные: {data.get('Наличные', '—')}")
+    else:
+        await update.message.reply_text("Пожалуйста, выберите кнопку из меню.")
 
 # 🧠 Основная функция
 def main():
@@ -68,7 +72,8 @@ def main():
         raise Exception("Переменные окружения отсутствуют")
 
     app = ApplicationBuilder().token(Telegram_Token).build()
-    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("menu", menu_command))
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
 
     logger.info("✅ Бот запущен")
     app.run_polling()
