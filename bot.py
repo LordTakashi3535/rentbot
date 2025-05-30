@@ -47,6 +47,11 @@ def get_data():
         return {}
 
 # Команда /menu
+from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+import logging
+
+logger = logging.getLogger(__name__)
+
 async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("📊 Баланс", callback_data="balance")],
@@ -55,13 +60,15 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🛡 Страховки", callback_data="insurance")],
         [InlineKeyboardButton("🧰 Тех.Осмотры", callback_data="tech")]
     ])
-    await update.message.reply_text("Выберите действие:", reply_markup=keyboard)
+    # В зависимости от типа обновления, либо reply_text (сообщение), либо edit_message_text (callback)
+    if update.message:
+        await update.message.reply_text("Выберите действие:", reply_markup=keyboard)
+    elif update.callback_query:
+        await update.callback_query.edit_message_text("Выберите действие:", reply_markup=keyboard)
 
-# Кнопка отмены
 def cancel_keyboard():
     return InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="cancel")]])
 
-# Обработка нажатий кнопок
 async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -71,11 +78,14 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "cancel":
         context.user_data.clear()
         await query.edit_message_text("Действие отменено. Возврат в меню.")
-        return await menu_command(update, context)
+        # Показываем меню после отмены
+        await menu_command(update, context)
+        return
 
     if data == "menu":
         context.user_data.clear()
-        return await menu_command(update, context)
+        await menu_command(update, context)
+        return
 
     if data == "add_income":
         context.user_data.clear()
@@ -104,43 +114,51 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["action"] = "expense"
         context.user_data["step"] = "amount"
         await query.edit_message_text("Введите сумму расхода:", reply_markup=cancel_keyboard())
-        
+
     elif data == "insurance":
         try:
             sheet = get_gspread_client().open_by_key(SPREADSHEET_ID).worksheet("Страховки")
             rows = sheet.get_all_values()[1:]  # пропустить заголовок
             logger.info(f"Строки страховок: {rows}")
 
-        if not rows:
-            await query.edit_message_text("🚗 Страховки не найдены.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="menu")]]))
-            return
+            if not rows:
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅️ Назад", callback_data="menu")]
+                ])
+                await query.edit_message_text("🚗 Страховки не найдены.", reply_markup=keyboard)
+                return
 
-        text = "🚗 Страховки:\n"
-        for i, row in enumerate(rows):
-            if len(row) >= 2:
-                text += f"{i+1}. {row[0]} до {row[1]}\n"
-            else:
-                text += f"{i+1}. {row[0]} — дата не указана\n"
+            text = "🚗 Страховки:\n"
+            for i, row in enumerate(rows):
+                if len(row) >= 2:
+                    text += f"{i+1}. {row[0]} до {row[1]}\n"
+                else:
+                    text += f"{i+1}. {row[0]} — дата не указана\n"
 
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("✏️ Изменить", callback_data="edit_insurance")],
                 [InlineKeyboardButton("⬅️ Назад", callback_data="menu")]
             ])
 
-        # Временно без Markdown, чтобы исключить проблему с разметкой
-        await query.edit_message_text(text, reply_markup=keyboard)
-    except Exception as e:
-        logger.error(f"Ошибка получения страховок: {e}")
-        await query.message.reply_text("⚠️ Не удалось получить данные по страховкам.")
+            await query.edit_message_text(text, reply_markup=keyboard)
+        except Exception as e:
+            logger.error(f"Ошибка получения страховок: {e}")
+            await query.message.reply_text("⚠️ Не удалось получить данные по страховкам.")
 
     elif data == "edit_insurance":
         context.user_data["edit_type"] = "insurance"
-        await query.edit_message_text("Введите название машины и новую дату через тире (например: Toyota - 01.09.2025)", reply_markup=cancel_keyboard())
+        await query.edit_message_text(
+            "Введите название машины и новую дату через тире (например: Toyota - 01.09.2025)",
+            reply_markup=cancel_keyboard()
+        )
 
     elif data == "edit_tech":
         context.user_data["edit_type"] = "tech"
-        await query.edit_message_text("Введите название машины и новую дату через тире (например: BMW - 15.10.2025)", reply_markup=cancel_keyboard())
-            
+        await query.edit_message_text(
+            "Введите название машины и новую дату через тире (например: BMW - 15.10.2025)",
+            reply_markup=cancel_keyboard()
+        )
+
     elif data == "balance":
         try:
             data = get_data()
