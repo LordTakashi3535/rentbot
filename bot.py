@@ -82,20 +82,18 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("Введите сумму расхода:")
 
    elif query.data == "balance":
-    try:
         data = get_data()
         text = (
             f"💼 Баланс: {data.get('Баланс', '—')}\n"
             f"💳 Карта: {data.get('Карта', '—')}\n"
             f"💵 Наличные: {data.get('Наличные', '—')}"
         )
-
+        # Здесь добавляем reply_markup, если нужно оставить кнопки
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("📊 Баланс", callback_data="balance")],
             [InlineKeyboardButton("📥 Доход", callback_data="add_income")],
             [InlineKeyboardButton("📤 Расход", callback_data="add_expense")]
         ])
-
         await query.message.reply_text(text, reply_markup=keyboard)
     except Exception as e:
         logger.error(f"Ошибка при выводе баланса: {e}")
