@@ -275,6 +275,8 @@ async def set_bot_commands(application):
     ]
     await application.bot.set_my_commands(commands)
 
+import asyncio
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 
 async def main():
     if not Telegram_Token or not GOOGLE_CREDENTIALS_B64:
