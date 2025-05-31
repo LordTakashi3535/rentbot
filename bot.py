@@ -59,7 +59,8 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("📥 Доход", callback_data="add_income"),
          InlineKeyboardButton("📤 Расход", callback_data="add_expense")],
         [InlineKeyboardButton("🛡 Страховки", callback_data="insurance"),
-         InlineKeyboardButton("🧰 Тех.Осмотры", callback_data="tech")]
+         InlineKeyboardButton("🧰 Тех.Осмотры", callback_data="tech")],
+        [InlineKeyboardButton("🔵 Синяя Кнопка", callback_data="blue_button")]  # Добавляем синюю кнопку
     ])
 
     if update.message:
@@ -149,6 +150,9 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Ошибка страховок: {e}")
             await query.message.reply_text("⚠️ Не удалось получить данные по страховкам.")
+
+    elif data == "blue_button":  # Обработка нажатия на синюю кнопку
+        await query.edit_message_text("🔵 Вы нажали на синюю кнопку!")
 
     elif data == "tech":
         try:
@@ -274,6 +278,7 @@ async def set_bot_commands(application):
         BotCommand("menu", "Открыть меню"),
     ]
     await application.bot.set_my_commands(commands)
+
 
 import asyncio
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters
