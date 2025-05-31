@@ -277,6 +277,8 @@ async def set_bot_commands(application):
     await application.bot.set_my_commands(commands)
 
 
+import asyncio
+
 async def main():
     if not Telegram_Token or not GOOGLE_CREDENTIALS_B64:
         raise Exception("❌ Не заданы переменные окружения")
@@ -295,6 +297,16 @@ async def main():
 
 
 if __name__ == "__main__":
-    import asyncio
-    # Заменяем asyncio.run() на просто await main()
-    asyncio.ensure_future(main())
+    try:
+        # Пытаемся получить текущий цикл событий
+        loop = asyncio.get_event_loop()
+        
+        if loop.is_running():
+            # Если цикл событий уже работает, планируем выполнение main()
+            asyncio.ensure_future(main())
+        else:
+            # Если цикл не работает, создаём новый цикл и запускаем main()
+            asyncio.run(main())
+    except RuntimeError:
+        # В случае ошибки, если цикла нет, просто запускаем его
+        asyncio.run(main())  # Если нет активного цикла, создаем новый и запускаем main()
