@@ -59,8 +59,7 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("📥 Доход", callback_data="add_income"),
          InlineKeyboardButton("📤 Расход", callback_data="add_expense")],
         [InlineKeyboardButton("🛡 Страховки", callback_data="insurance"),
-         InlineKeyboardButton("🧰 Тех.Осмотры", callback_data="tech")],
-        [InlineKeyboardButton("🔵 Синяя Кнопка", callback_data="blue_button")]  # Добавляем синюю кнопку
+         InlineKeyboardButton("🧰 Тех.Осмотры", callback_data="tech")]
     ])
 
     if update.message:
@@ -151,9 +150,6 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Ошибка страховок: {e}")
             await query.message.reply_text("⚠️ Не удалось получить данные по страховкам.")
 
-    elif data == "blue_button":  # Обработка нажатия на синюю кнопку
-        await query.edit_message_text("🔵 Вы нажали на синюю кнопку!")
-
     elif data == "tech":
         try:
             sheet = get_gspread_client().open_by_key(SPREADSHEET_ID).worksheet("ТехОсмотры")
@@ -217,71 +213,48 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
             if not name_found:
                 await update.message.reply_text(f"⚠️ '{name}' не найдено.")
         except ValueError:
-            await update.message.reply_text("⚠️ Формат ввода неверный. Пример: Toyota - 01.09.2025")
+            await update.message.reply_text("❌ Неверный формат. Попробуйте еще раз (Пример: Toyota - 01.09.2025)")
 
+        context.user_data.clear()
         return
 
     action = context.user_data.get("action")
-    step = context.user_data.get("step")
 
-    if not action or not step:
+    if action == "income" or action == "expense":
+        try:
+            amount = float(text)
+            category = context.user_data.get("category")
+            sheet = get_gspread_client().open_by_key(SPREADSHEET_ID).worksheet("Сводка")
+
+            if action == "income":
+                data = get_data()
+                current_balance = float(data.get("Баланс", 0))
+                new_balance = current_balance + amount
+                sheet.update_cell(2, 2, new_balance)
+                await update.message.reply_text(f"✅ Добавлено {amount} к доходам в категорию {category}. Новый баланс: {new_balance}.")
+
+            elif action == "expense":
+                data = get_data()
+                current_balance = float(data.get("Баланс", 0))
+                new_balance = current_balance - amount
+                sheet.update_cell(2, 2, new_balance)
+                await update.message.reply_text(f"✅ Расход {amount} списан. Новый баланс: {new_balance}.")
+
+        except ValueError:
+            await update.message.reply_text("❌ Пожалуйста, введите число.")
+
+        context.user_data.clear()
         return
 
-    if step == "amount":
-        try:
-            amount = float(text.replace(",", "."))
-            if amount <= 0:
-                raise ValueError("Сумма должна быть положительной")
-            context.user_data["amount"] = amount
-            context.user_data["step"] = "description"
-            await update.message.delete()
-            await update.message.chat.send_message("Введите описание:", reply_markup=cancel_keyboard())
-        except ValueError:
-            await update.message.reply_text("⚠️ Введите положительное число (пример: 1200.50)")
 
-    elif step == "description":
-        description = text
-        now = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
-        amount = context.user_data.get("amount")
-        category = context.user_data.get("category", "-")
-
-        try:
-            client = get_gspread_client()
-            if action == "income":
-                sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Доход")
-                sheet.append_row([now, category, amount, description])
-                text = f"✅ Добавлено в *Доход*:\n📅 `{now}`\n🏷 `{category}`\n💰 `{amount}`\n📝 `{description}`"
-            else:
-                sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Расход")
-                sheet.append_row([now, amount, description])
-                text = f"✅ Добавлено в *Расход*:\n📅 `{now}`\n💸 `-{amount}`\n📝 `{description}`"
-
-            summary = get_data()
-            text += f"\n\n📊 Баланс:\n💼 {summary.get('Баланс', '—')}\n💳 {summary.get('Карта', '—')}\n💵 {summary.get('Наличные', '—')}"
-
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("📥 Доход", callback_data="add_income"),
-                 InlineKeyboardButton("📤 Расход", callback_data="add_expense")],
-                [InlineKeyboardButton("⬅️ Назад", callback_data="menu")]
-            ])
-
-            context.user_data.clear()
-            await update.message.reply_text(text, reply_markup=keyboard, parse_mode="Markdown")
-        except Exception as e:
-            logger.error(f"Ошибка записи: {e}")
-            await update.message.reply_text("⚠️ Ошибка записи в таблицу.")
-
-
-async def set_bot_commands(application):
+async def set_bot_commands(app):
     commands = [
         BotCommand("start", "Запустить бота"),
-        BotCommand("menu", "Открыть меню"),
+        BotCommand("menu", "Показать меню"),
+        BotCommand("balance", "Показать баланс"),
     ]
-    await application.bot.set_my_commands(commands)
+    await app.set_my_commands(commands)
 
-
-import asyncio
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 
 async def main():
     if not Telegram_Token or not GOOGLE_CREDENTIALS_B64:
@@ -299,11 +272,8 @@ async def main():
     logger.info("✅ Бот запущен")
     await app.run_polling()  # Здесь запускаем polling, это инициирует цикл событий
 
+
 if __name__ == "__main__":
-    try:
-        # Если event loop уже запущен, используем create_task
-        asyncio.create_task(main())
-    except RuntimeError:
-        # Если event loop не был запущен, запускаем его
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(main())
+    import asyncio
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(main())
