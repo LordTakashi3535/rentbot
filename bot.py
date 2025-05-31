@@ -22,16 +22,13 @@ from telegram.ext import (
     filters,
 )
 
-# Логирование
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Переменные окружения
 Telegram_Token = os.getenv("Telegram_Token")
 GOOGLE_CREDENTIALS_B64 = os.getenv("GOOGLE_CREDENTIALS_B64")
 SPREADSHEET_ID = "1qjVJZUqm1hT5IkrASq-_iL9cc4wDl8fdjvd7KDMWL-U"
 
-# Авторизация Google Sheets
 def get_gspread_client():
     creds_json = base64.b64decode(GOOGLE_CREDENTIALS_B64).decode("utf-8")
     creds_dict = json.loads(creds_json)
@@ -52,7 +49,7 @@ def get_data():
         logger.error(f"Ошибка получения данных: {e}")
         return {}
 
-# Постоянная клавиатура "Меню"
+# Статичная клавиатура с кнопкой "Меню" под полем ввода
 def persistent_menu_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[["Меню"]],
@@ -60,7 +57,7 @@ def persistent_menu_keyboard():
         one_time_keyboard=False
     )
 
-# Команда меню
+# Показываем меню (inline кнопки) и добавляем кнопку "Меню" под полем ввода
 async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     inline_keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("📊 Баланс", callback_data="balance")],
@@ -74,10 +71,11 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if update.message:
         await update.message.reply_text("Выберите действие:", reply_markup=inline_keyboard)
-        await update.message.reply_text("↘️ Или нажмите кнопку «Меню» ниже", reply_markup=reply_kb)
+        # Просто клавиатура без дополнительного текста
+        await update.message.reply_text("", reply_markup=reply_kb)
     elif update.callback_query:
         await update.callback_query.edit_message_text("Выберите действие:", reply_markup=inline_keyboard)
-        await update.callback_query.message.reply_text("↘️ Или нажмите кнопку «Меню» ниже", reply_markup=reply_kb)
+        await update.callback_query.message.reply_text("", reply_markup=reply_kb)
 
 def cancel_keyboard():
     return InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="cancel")]])
@@ -190,6 +188,10 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Ошибка баланса: {e}")
             await query.message.reply_text("⚠️ Не удалось получить баланс.")
 
+# Обработчик нажатия на кнопку "Меню" с клавиатуры — не отправляем текст, просто открываем меню
+async def on_menu_button_pressed(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await menu_command(update, context)
+
 async def handle_amount_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
 
@@ -261,15 +263,14 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("📥 Доход", callback_data="add_income"),
                  InlineKeyboardButton("📤 Расход", callback_data="add_expense")],
-                [InlineKeyboardButton("⬅️ В меню", callback_data="menu")]
+                [InlineKeyboardButton("⬅️ Назад", callback_data="menu")]
             ])
 
-            await update.message.delete()
-            await update.message.chat.send_message(text, parse_mode="Markdown", reply_markup=keyboard)
             context.user_data.clear()
+            await update.message.reply_text(text, reply_markup=keyboard, parse_mode="Markdown")
         except Exception as e:
             logger.error(f"Ошибка записи: {e}")
-            await update.message.reply_text("❌ Ошибка записи. Попробуйте позже.")
+            await update.message.reply_text("⚠️ Ошибка записи в таблицу.")
 
 def main():
     if not Telegram_Token or not GOOGLE_CREDENTIALS_B64:
@@ -279,7 +280,10 @@ def main():
 
     app.add_handler(CommandHandler("start", menu_command))
     app.add_handler(CommandHandler("menu", menu_command))
-    app.add_handler(MessageHandler(filters.TEXT & filters.Regex("^Меню$"), menu_command))
+
+    # Обработка нажатия кнопки "Меню" на клавиатуре — сразу открываем меню
+    app.add_handler(MessageHandler(filters.TEXT & filters.Regex("^Меню$"), on_menu_button_pressed))
+
     app.add_handler(CallbackQueryHandler(handle_button))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_amount_description))
 
