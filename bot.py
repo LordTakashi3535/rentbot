@@ -189,8 +189,8 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
         await update.message.reply_text("❌ Отменено.")
         return await menu_command(update, context)
 
-    if "edit_type" in context.user_data:
-        edit_type = context.user_data.pop("edit_type")
+    edit_type = context.user_data.get("edit_type")
+    if edit_type:
         try:
             name, new_date = text.split(" - ")
             new_date = new_date.strip()
