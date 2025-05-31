@@ -294,7 +294,6 @@ async def main():
 
 
 if __name__ == "__main__":
+    # Убираем asyncio.run() и запускаем через .run_polling()
     import asyncio
-
-    # Прямо вызываем main, без asyncio.run()
     asyncio.run(main())
