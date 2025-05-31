@@ -11,7 +11,7 @@ from telegram import (
     Update,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
-    ReplyKeyboardMarkup,
+    BotCommand,
 )
 from telegram.ext import (
     ApplicationBuilder,
@@ -49,15 +49,7 @@ def get_data():
         logger.error(f"Ошибка получения данных: {e}")
         return {}
 
-# Статичная клавиатура с кнопкой "Меню" под полем ввода
-def persistent_menu_keyboard():
-    return ReplyKeyboardMarkup(
-        keyboard=[["Меню"]],
-        resize_keyboard=True,
-        one_time_keyboard=False
-    )
-
-# Показываем меню (inline кнопки) и добавляем кнопку "Меню" под полем ввода
+# Показываем меню (inline кнопки)
 async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     inline_keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("📊 Баланс", callback_data="balance")],
@@ -67,15 +59,10 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
          InlineKeyboardButton("🧰 Тех.Осмотры", callback_data="tech")]
     ])
 
-    reply_kb = persistent_menu_keyboard()
-
     if update.message:
         await update.message.reply_text("Выберите действие:", reply_markup=inline_keyboard)
-        # Просто клавиатура без дополнительного текста
-        await update.message.reply_text("", reply_markup=reply_kb)
     elif update.callback_query:
         await update.callback_query.edit_message_text("Выберите действие:", reply_markup=inline_keyboard)
-        await update.callback_query.message.reply_text("", reply_markup=reply_kb)
 
 def cancel_keyboard():
     return InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="cancel")]])
@@ -188,10 +175,6 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Ошибка баланса: {e}")
             await query.message.reply_text("⚠️ Не удалось получить баланс.")
 
-# Обработчик нажатия на кнопку "Меню" с клавиатуры — не отправляем текст, просто открываем меню
-async def on_menu_button_pressed(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await menu_command(update, context)
-
 async def handle_amount_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
 
@@ -272,6 +255,14 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
             logger.error(f"Ошибка записи: {e}")
             await update.message.reply_text("⚠️ Ошибка записи в таблицу.")
 
+# Установка команд для появления синей кнопки меню слева от поля ввода
+async def set_bot_commands(application):
+    commands = [
+        BotCommand("start", "Запустить бота"),
+        BotCommand("menu", "Открыть меню"),
+    ]
+    await application.bot.set_my_commands(commands)
+
 def main():
     if not Telegram_Token or not GOOGLE_CREDENTIALS_B64:
         raise Exception("❌ Не заданы переменные окружения")
@@ -280,12 +271,13 @@ def main():
 
     app.add_handler(CommandHandler("start", menu_command))
     app.add_handler(CommandHandler("menu", menu_command))
-
-    # Обработка нажатия кнопки "Меню" на клавиатуре — сразу открываем меню
-    app.add_handler(MessageHandler(filters.TEXT & filters.Regex("^Меню$"), on_menu_button_pressed))
+    # Удалил обработчик кнопки "Меню" с ReplyKeyboard, т.к. клавиатуры больше нет
 
     app.add_handler(CallbackQueryHandler(handle_button))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_amount_description))
+
+    import asyncio
+    asyncio.run(set_bot_commands(app))  # Устанавливаем команды перед запуском
 
     logger.info("✅ Бот запущен")
     app.run_polling()
