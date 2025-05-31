@@ -29,6 +29,7 @@ Telegram_Token = os.getenv("Telegram_Token")
 GOOGLE_CREDENTIALS_B64 = os.getenv("GOOGLE_CREDENTIALS_B64")
 SPREADSHEET_ID = "1qjVJZUqm1hT5IkrASq-_iL9cc4wDl8fdjvd7KDMWL-U"
 
+
 def get_gspread_client():
     creds_json = base64.b64decode(GOOGLE_CREDENTIALS_B64).decode("utf-8")
     creds_dict = json.loads(creds_json)
@@ -39,6 +40,7 @@ def get_gspread_client():
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     return gspread.authorize(creds)
 
+
 def get_data():
     try:
         client = get_gspread_client()
@@ -48,6 +50,7 @@ def get_data():
     except Exception as e:
         logger.error(f"Ошибка получения данных: {e}")
         return {}
+
 
 # Показываем меню (inline кнопки)
 async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -64,8 +67,10 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif update.callback_query:
         await update.callback_query.edit_message_text("Выберите действие:", reply_markup=inline_keyboard)
 
+
 def cancel_keyboard():
     return InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="cancel")]])
+
 
 async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -175,6 +180,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Ошибка баланса: {e}")
             await query.message.reply_text("⚠️ Не удалось получить баланс.")
 
+
 async def handle_amount_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
 
@@ -255,6 +261,7 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
             logger.error(f"Ошибка записи: {e}")
             await update.message.reply_text("⚠️ Ошибка записи в таблицу.")
 
+
 # Установка команд для появления синей кнопки меню слева от поля ввода
 async def set_bot_commands(application):
     commands = [
@@ -263,7 +270,8 @@ async def set_bot_commands(application):
     ]
     await application.bot.set_my_commands(commands)
 
-def main():
+
+async def main():
     if not Telegram_Token or not GOOGLE_CREDENTIALS_B64:
         raise Exception("❌ Не заданы переменные окружения")
 
@@ -271,16 +279,16 @@ def main():
 
     app.add_handler(CommandHandler("start", menu_command))
     app.add_handler(CommandHandler("menu", menu_command))
-    # Удалил обработчик кнопки "Меню" с ReplyKeyboard, т.к. клавиатуры больше нет
-
     app.add_handler(CallbackQueryHandler(handle_button))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_amount_description))
 
-    import asyncio
-    asyncio.run(set_bot_commands(app))  # Устанавливаем команды перед запуском
+    await set_bot_commands(app)
 
     logger.info("✅ Бот запущен")
-    app.run_polling()
+    await app.run_polling()
+
 
 if __name__ == "__main__":
-    main()
+    import asyncio
+    asyncio.run(main())
+
