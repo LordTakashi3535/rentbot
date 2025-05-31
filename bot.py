@@ -192,13 +192,13 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
     if "edit_type" in context.user_data:
         edit_type = context.user_data.pop("edit_type")
         try:
-            name, new_date = map(str.strip, text.split("-", 1))
+            name, new_date = text.split(" - ")
+            new_date = new_date.strip()
+
             if edit_type == "insurance":
                 sheet = get_gspread_client().open_by_key(SPREADSHEET_ID).worksheet("Страховки")
-            elif edit_type == "tech":
-                sheet = get_gspread_client().open_by_key(SPREADSHEET_ID).worksheet("ТехОсмотры")
             else:
-                raise ValueError("Неизвестный тип редактирования")
+                sheet = get_gspread_client().open_by_key(SPREADSHEET_ID).worksheet("ТехОсмотры")
 
             rows = sheet.get_all_values()
             name_found = False
@@ -268,7 +268,6 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
             await update.message.reply_text("⚠️ Ошибка записи в таблицу.")
 
 
-# Установка команд для появления синей кнопки меню слева от поля ввода
 async def set_bot_commands(application):
     commands = [
         BotCommand("start", "Запустить бота"),
@@ -296,4 +295,6 @@ async def main():
 
 if __name__ == "__main__":
     import asyncio
-    asyncio.run(main())
+
+    # Убираем asyncio.run и просто запускаем main() напрямую
+    asyncio.get_event_loop().run_until_complete(main())
