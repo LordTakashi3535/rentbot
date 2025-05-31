@@ -290,10 +290,8 @@ async def main():
     await set_bot_commands(app)
 
     logger.info("✅ Бот запущен")
-    await app.run_polling()
-
+    await app.run_polling()  # Здесь запускаем polling, это инициирует цикл событий
 
 if __name__ == "__main__":
-    # Убираем asyncio.run() и запускаем через .run_polling()
-    import asyncio
-    asyncio.run(main())
+    # Удалить строку ниже!
+    # asyncio.run(main())  # Удаляем её
