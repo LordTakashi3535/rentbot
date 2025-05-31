@@ -293,5 +293,8 @@ async def main():
     await app.run_polling()  # Здесь запускаем polling, это инициирует цикл событий
 
 if __name__ == "__main__":
-    # Удалить строку ниже!
-    # asyncio.run(main())  # Удаляем её
+    loop = asyncio.get_event_loop()  # Получаем текущий event loop
+    if loop.is_running():  # Если event loop уже запущен
+        loop.create_task(main())  # Создаем задачу для main(), не блокируя loop
+    else:
+        loop.run_until_complete(main())  # Если loop не запущен, запускаем main()
