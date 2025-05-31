@@ -193,22 +193,28 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
         edit_type = context.user_data.pop("edit_type")
         try:
             name, new_date = map(str.strip, text.split("-", 1))
-            if not re.match(r"^\d{2}\.\d{2}\.\d{4}$", new_date):
-                await update.message.reply_text("❌ Некорректный формат даты. Используйте дд.мм.гггг")
-                return
-            sheet_name = "Страховки" if edit_type == "insurance" else "ТехОсмотры"
-            sheet = get_gspread_client().open_by_key(SPREADSHEET_ID).worksheet(sheet_name)
+            if edit_type == "insurance":
+                sheet = get_gspread_client().open_by_key(SPREADSHEET_ID).worksheet("Страховки")
+            elif edit_type == "tech":
+                sheet = get_gspread_client().open_by_key(SPREADSHEET_ID).worksheet("ТехОсмотры")
+            else:
+                raise ValueError("Неизвестный тип редактирования")
+
             rows = sheet.get_all_values()
+            name_found = False
 
             for i, row in enumerate(rows):
-                if row and row[0].lower() == name.lower():
-                    sheet.update_cell(i + 1, 2, new_date)
-                    await update.message.reply_text(f"✅ Дата обновлена:\n{name} — {new_date}")
-                    return
-            await update.message.reply_text("🚫 Машина не найдена.")
-        except Exception as e:
-            logger.error(f"Ошибка при обновлении: {e}")
-            await update.message.reply_text("❌ Ошибка обновления.")
+                if row[0].lower() == name.lower():
+                    name_found = True
+                    sheet.update_cell(i+1, 2, new_date)
+                    await update.message.reply_text(f"✅ Дата для '{name}' обновлена на {new_date}.")
+                    break
+
+            if not name_found:
+                await update.message.reply_text(f"⚠️ '{name}' не найдено.")
+        except ValueError:
+            await update.message.reply_text("⚠️ Формат ввода неверный. Пример: Toyota - 01.09.2025")
+
         return
 
     action = context.user_data.get("action")
@@ -290,5 +296,5 @@ async def main():
 
 if __name__ == "__main__":
     import asyncio
-    asyncio.run(main())
-
+    # Заменяем asyncio.run() на просто await main()
+    asyncio.ensure_future(main())
