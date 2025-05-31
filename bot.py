@@ -5,7 +5,6 @@ import logging
 import gspread
 import datetime
 import re
-import asyncio
 
 from oauth2client.service_account import ServiceAccountCredentials
 from telegram import (
@@ -111,6 +110,24 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["step"] = "amount"
         await query.edit_message_text("Введите сумму расхода:", reply_markup=cancel_keyboard())
 
+    elif data == "balance":
+        try:
+            data = get_data()
+            text = (
+                f"💼 Баланс: {data.get('Баланс', '—')}\n"
+                f"💳 Карта: {data.get('Карта', '—')}\n"
+                f"💵 Наличные: {data.get('Наличные', '—')}"
+            )
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("📥 Доход", callback_data="add_income"),
+                 InlineKeyboardButton("📤 Расход", callback_data="add_expense")],
+                [InlineKeyboardButton("⬅️ Назад", callback_data="menu")]
+            ])
+            await query.edit_message_text(text, reply_markup=keyboard)
+        except Exception as e:
+            logger.error(f"Ошибка баланса: {e}")
+            await query.message.reply_text("⚠️ Не удалось получить баланс.")
+
     elif data == "insurance":
         try:
             sheet = get_gspread_client().open_by_key(SPREADSHEET_ID).worksheet("Страховки")
@@ -162,24 +179,6 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "edit_tech":
         context.user_data["edit_type"] = "tech"
         await query.edit_message_text("Введите название машины и дату через тире (Пример: BMW - 15.10.2025)", reply_markup=cancel_keyboard())
-
-    elif data == "balance":
-        try:
-            data = get_data()
-            text = (
-                f"💼 Баланс: {data.get('Баланс', '—')}\n"
-                f"💳 Карта: {data.get('Карта', '—')}\n"
-                f"💵 Наличные: {data.get('Наличные', '—')}"
-            )
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("📥 Доход", callback_data="add_income"),
-                 InlineKeyboardButton("📤 Расход", callback_data="add_expense")],
-                [InlineKeyboardButton("⬅️ Назад", callback_data="menu")]
-            ])
-            await query.edit_message_text(text, reply_markup=keyboard)
-        except Exception as e:
-            logger.error(f"Ошибка баланса: {e}")
-            await query.message.reply_text("⚠️ Не удалось получить баланс.")
 
 
 async def handle_amount_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -278,8 +277,6 @@ async def set_bot_commands(application):
     await application.bot.set_my_commands(commands)
 
 
-import asyncio
-
 async def main():
     if not Telegram_Token or not GOOGLE_CREDENTIALS_B64:
         raise Exception("❌ Не заданы переменные окружения")
@@ -298,16 +295,5 @@ async def main():
 
 
 if __name__ == "__main__":
-    try:
-        # Пытаемся получить текущий цикл событий
-        loop = asyncio.get_event_loop()
-        
-        if loop.is_running():
-            # Если цикл событий уже работает, планируем выполнение main()
-            asyncio.ensure_future(main())
-        else:
-            # Если цикл не работает, создаём новый цикл и запускаем main()
-            asyncio.run(main())
-    except RuntimeError:
-        # В случае ошибки, если цикла нет, просто запускаем его
-        asyncio.run(main())  # Если нет активного цикла, создаем новый и запускаем main()
+    import asyncio
+    asyncio.run(main())
