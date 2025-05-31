@@ -186,8 +186,8 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
 
     if text.lower() == "отмена":
         context.user_data.clear()
-        await update.message.reply_text("❌ Отменено.")
-        return await menu_command(update, context)
+        await update.message.reply_text("❌ Действие отменено.", reply_markup=cancel_keyboard())
+        return
 
     edit_type = context.user_data.get("edit_type")
     if edit_type:
@@ -296,5 +296,5 @@ async def main():
 if __name__ == "__main__":
     import asyncio
 
-    # Убираем asyncio.run и просто запускаем main() напрямую
-    asyncio.get_event_loop().run_until_complete(main())
+    # Прямо вызываем main, без asyncio.run()
+    asyncio.run(main())
