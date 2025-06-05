@@ -242,9 +242,13 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
             if amount <= 0:
                 raise ValueError("Сумма должна быть положительной")
             context.user_data["amount"] = amount
-            context.user_data["step"] = "description"
-            await update.message.delete()
-            await update.message.chat.send_message("Введите описание:", reply_markup=cancel_keyboard())
+            context.user_data["step"] = "source"
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("💳 Карта", callback_data="source_card")],
+                [InlineKeyboardButton("💵 Наличные", callback_data="source_cash")],
+                [InlineKeyboardButton("❌ Отмена", callback_data="cancel")]
+            ])
+            await update.message.reply_text("Выберите источник:", reply_markup=keyboard)
         except ValueError:
             await update.message.reply_text("⚠️ Введите положительное число (пример: 1200.50)")
 
@@ -253,17 +257,36 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
         now = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
         amount = context.user_data.get("amount")
         category = context.user_data.get("category", "-")
+        source = context.user_data.get("source", "-")
 
         try:
             client = get_gspread_client()
+
             if action == "income":
                 sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Доход")
-                sheet.append_row([now, category, amount, description])
-                text = f"✅ Добавлено в *Доход*:\n📅 {now}\n🏷 {category}\n💰 {amount}\n📝 {description}"
+                row = [now, category, "", "", description]  # C и D будут позже
+
+                if source == "Карта":
+                    row[2] = amount  # C
+                else:
+                    row[3] = amount  # D
+
+                sheet.append_row(row)
+
+                text = f"✅ Добавлено в *Доход*:\n📅 {now}\n🏷 {category}\n💰 {amount} ({source})\n📝 {description}"
+
             else:
                 sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Расход")
-                sheet.append_row([now, amount, description])
-                text = f"✅ Добавлено в *Расход*:\n📅 {now}\n💸 -{amount}\n📝 {description}"
+                row = [now, "", "", description]  # B и C
+
+                if source == "Карта":
+                    row[1] = amount  # B
+                else:
+                    row[2] = amount  # C
+
+                sheet.append_row(row)
+
+                text = f"✅ Добавлено в *Расход*:\n📅 {now}\n💸 -{amount} ({source})\n📝 {description}"
 
             summary = get_data()
             text += f"\n\n📊 Баланс:\n💼 {summary.get('Баланс', '—')}\n💳 {summary.get('Карта', '—')}\n💵 {summary.get('Наличные', '—')}"
@@ -279,7 +302,6 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
         except Exception as e:
             logger.error(f"Ошибка записи: {e}")
             await update.message.reply_text("⚠️ Ошибка записи в таблицу.")
-
 
 def main():
     if not Telegram_Token or not GOOGLE_CREDENTIALS_B64:
