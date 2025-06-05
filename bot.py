@@ -244,33 +244,50 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
         amount = context.user_data.get("amount")
         category = context.user_data.get("category", "-")
         source = context.user_data.get("source", "-")
-
+    
         try:
             client = get_gspread_client()
             if action == "income":
                 sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Доход")
-                sheet.append_row([now, category, amount, description, source])
+    
+                # Строим строку: [дата, категория, карта, наличка, описание]
+                row = [now, category]
+                if source == "Карта":
+                    row += [amount, "", description]
+                else:
+                    row += ["", amount, description]
+    
+                sheet.append_row(row)
+    
                 text = f"✅ Добавлено в *Доход*:\n📅 {now}\n🏷 {category}\n💰 {amount}\n💳 {source}\n📝 {description}"
             else:
                 sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Расход")
-                sheet.append_row([now, amount, description, source])
+    
+                # Строим строку: [дата, карта, наличка, описание]
+                row = [now]
+                if source == "Карта":
+                    row += [amount, "", description]
+                else:
+                    row += ["", amount, description]
+    
+                sheet.append_row(row)
+    
                 text = f"✅ Добавлено в *Расход*:\n📅 {now}\n💸 -{amount}\n💳 {source}\n📝 {description}"
-
+    
             summary = get_data()
             text += f"\n\n📊 Баланс:\n💼 {summary.get('Баланс', '—')}\n💳 {summary.get('Карта', '—')}\n💵 {summary.get('Наличные', '—')}"
-
+    
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("📥 Доход", callback_data="add_income"),
                  InlineKeyboardButton("📤 Расход", callback_data="add_expense")],
                 [InlineKeyboardButton("⬅️ Назад", callback_data="menu")]
             ])
-
+    
             context.user_data.clear()
             await update.message.reply_text(text, reply_markup=keyboard, parse_mode="Markdown")
         except Exception as e:
             logger.error(f"Ошибка записи: {e}")
             await update.message.reply_text("⚠️ Ошибка записи в таблицу.")
-
 
 def main():
     if not Telegram_Token or not GOOGLE_CREDENTIALS_B64:
