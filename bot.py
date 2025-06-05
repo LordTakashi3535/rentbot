@@ -227,13 +227,11 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
                 raise ValueError("Сумма должна быть положительной")
             context.user_data["amount"] = amount
             context.user_data["step"] = "source"
-    
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("💳 Карта", callback_data="source_card")],
                 [InlineKeyboardButton("💵 Наличные", callback_data="source_cash")],
                 [InlineKeyboardButton("❌ Отмена", callback_data="cancel")]
             ])
-    
             await update.message.reply_text("Выберите источник:", reply_markup=keyboard)
         except ValueError:
             await update.message.reply_text("⚠️ Введите положительное число (пример: 1200.50)")
@@ -244,50 +242,33 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
         amount = context.user_data.get("amount")
         category = context.user_data.get("category", "-")
         source = context.user_data.get("source", "-")
-    
+
         try:
             client = get_gspread_client()
             if action == "income":
                 sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Доход")
-    
-                # Строим строку: [дата, категория, карта, наличка, описание]
-                row = [now, category]
-                if source == "Карта":
-                    row += [amount, "", description]
-                else:
-                    row += ["", amount, description]
-    
-                sheet.append_row(row)
-    
+                sheet.append_row([now, category, amount, description, source])
                 text = f"✅ Добавлено в *Доход*:\n📅 {now}\n🏷 {category}\n💰 {amount}\n💳 {source}\n📝 {description}"
             else:
                 sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Расход")
-    
-                # Строим строку: [дата, карта, наличка, описание]
-                row = [now]
-                if source == "Карта":
-                    row += [amount, "", description]
-                else:
-                    row += ["", amount, description]
-    
-                sheet.append_row(row)
-    
+                sheet.append_row([now, amount, description, source])
                 text = f"✅ Добавлено в *Расход*:\n📅 {now}\n💸 -{amount}\n💳 {source}\n📝 {description}"
-    
+
             summary = get_data()
             text += f"\n\n📊 Баланс:\n💼 {summary.get('Баланс', '—')}\n💳 {summary.get('Карта', '—')}\n💵 {summary.get('Наличные', '—')}"
-    
+
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("📥 Доход", callback_data="add_income"),
                  InlineKeyboardButton("📤 Расход", callback_data="add_expense")],
                 [InlineKeyboardButton("⬅️ Назад", callback_data="menu")]
             ])
-    
+
             context.user_data.clear()
             await update.message.reply_text(text, reply_markup=keyboard, parse_mode="Markdown")
         except Exception as e:
             logger.error(f"Ошибка записи: {e}")
             await update.message.reply_text("⚠️ Ошибка записи в таблицу.")
+
 
 def main():
     if not Telegram_Token or not GOOGLE_CREDENTIALS_B64:
