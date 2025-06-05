@@ -227,11 +227,13 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
                 raise ValueError("Сумма должна быть положительной")
             context.user_data["amount"] = amount
             context.user_data["step"] = "source"
+    
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("💳 Карта", callback_data="source_card")],
                 [InlineKeyboardButton("💵 Наличные", callback_data="source_cash")],
                 [InlineKeyboardButton("❌ Отмена", callback_data="cancel")]
             ])
+    
             await update.message.reply_text("Выберите источник:", reply_markup=keyboard)
         except ValueError:
             await update.message.reply_text("⚠️ Введите положительное число (пример: 1200.50)")
