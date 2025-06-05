@@ -11,6 +11,7 @@ from telegram import (
     Update,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
+    ReplyKeyboardMarkup,
 )
 from telegram.ext import (
     ApplicationBuilder,
@@ -51,6 +52,16 @@ def get_data():
         return {}
 
 
+# Статичная клавиатура с кнопкой "Меню" под полем ввода
+def persistent_menu_keyboard():
+    return ReplyKeyboardMarkup(
+        keyboard=[["Меню"]],
+        resize_keyboard=True,
+        one_time_keyboard=False
+    )
+
+
+# Показываем меню (inline кнопки) и добавляем кнопку "Меню" под полем ввода
 async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     inline_keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("📊 Баланс", callback_data="balance")],
@@ -60,10 +71,15 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
          InlineKeyboardButton("🧰 Тех.Осмотры", callback_data="tech")]
     ])
 
+    reply_kb = persistent_menu_keyboard()
+
     if update.message:
         await update.message.reply_text("Выберите действие:", reply_markup=inline_keyboard)
+        # Просто клавиатура без дополнительного текста
+        await update.message.reply_text("", reply_markup=reply_kb)
     elif update.callback_query:
         await update.callback_query.edit_message_text("Выберите действие:", reply_markup=inline_keyboard)
+        await update.callback_query.message.reply_text("", reply_markup=reply_kb)
 
 
 def cancel_keyboard():
@@ -75,7 +91,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     data = query.data
 
-    if data in ["cancel", "menu"]:
+    if data == "cancel" or data == "menu":
         context.user_data.clear()
         await menu_command(update, context)
         return
@@ -107,11 +123,6 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["action"] = "expense"
         context.user_data["step"] = "amount"
         await query.edit_message_text("Введите сумму расхода:", reply_markup=cancel_keyboard())
-
-    elif data in ["source_card", "source_cash"]:
-        context.user_data["source"] = "Карта" if data == "source_card" else "Наличные"
-        context.user_data["step"] = "description"
-        await query.edit_message_text("Введите описание:", reply_markup=cancel_keyboard())
 
     elif data == "insurance":
         try:
@@ -184,6 +195,11 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("⚠️ Не удалось получить баланс.")
 
 
+# Обработчик нажатия на кнопку "Меню" с клавиатуры — не отправляем текст, просто открываем меню
+async def on_menu_button_pressed(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await menu_command(update, context)
+
+
 async def handle_amount_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
 
@@ -226,13 +242,9 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
             if amount <= 0:
                 raise ValueError("Сумма должна быть положительной")
             context.user_data["amount"] = amount
-            context.user_data["step"] = "source"
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("💳 Карта", callback_data="source_card")],
-                [InlineKeyboardButton("💵 Наличные", callback_data="source_cash")],
-                [InlineKeyboardButton("❌ Отмена", callback_data="cancel")]
-            ])
-            await update.message.reply_text("Выберите источник:", reply_markup=keyboard)
+            context.user_data["step"] = "description"
+            await update.message.delete()
+            await update.message.chat.send_message("Введите описание:", reply_markup=cancel_keyboard())
         except ValueError:
             await update.message.reply_text("⚠️ Введите положительное число (пример: 1200.50)")
 
@@ -241,18 +253,17 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
         now = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
         amount = context.user_data.get("amount")
         category = context.user_data.get("category", "-")
-        source = context.user_data.get("source", "-")
 
         try:
             client = get_gspread_client()
             if action == "income":
                 sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Доход")
-                sheet.append_row([now, category, amount, description, source])
-                text = f"✅ Добавлено в *Доход*:\n📅 {now}\n🏷 {category}\n💰 {amount}\n💳 {source}\n📝 {description}"
+                sheet.append_row([now, category, amount, description])
+                text = f"✅ Добавлено в *Доход*:\n📅 {now}\n🏷 {category}\n💰 {amount}\n📝 {description}"
             else:
                 sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Расход")
-                sheet.append_row([now, amount, description, source])
-                text = f"✅ Добавлено в *Расход*:\n📅 {now}\n💸 -{amount}\n💳 {source}\n📝 {description}"
+                sheet.append_row([now, amount, description])
+                text = f"✅ Добавлено в *Расход*:\n📅 {now}\n💸 -{amount}\n📝 {description}"
 
             summary = get_data()
             text += f"\n\n📊 Баланс:\n💼 {summary.get('Баланс', '—')}\n💳 {summary.get('Карта', '—')}\n💵 {summary.get('Наличные', '—')}"
@@ -278,7 +289,10 @@ def main():
 
     app.add_handler(CommandHandler("start", menu_command))
     app.add_handler(CommandHandler("menu", menu_command))
-    app.add_handler(MessageHandler(filters.TEXT & filters.Regex("^Меню$"), menu_command))
+
+    # Обработка нажатия кнопки "Меню" на клавиатуре — сразу открываем меню
+    app.add_handler(MessageHandler(filters.TEXT & filters.Regex("^Меню$"), on_menu_button_pressed))
+
     app.add_handler(CallbackQueryHandler(handle_button))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_amount_description))
 
@@ -287,4 +301,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main() 
