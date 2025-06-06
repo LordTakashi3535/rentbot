@@ -123,6 +123,15 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["action"] = "expense"
         context.user_data["step"] = "amount"
         await query.edit_message_text("Введите сумму расхода:", reply_markup=cancel_keyboard())
+        
+    elif data == "source_card":
+        context.user_data["source"] = "Карта"
+        context.user_data["step"] = "description"
+        await query.edit_message_text("Введите описание:")
+    elif data == "source_cash":
+        context.user_data["source"] = "Наличные"
+        context.user_data["step"] = "description"
+        await query.edit_message_text("Введите описание:")    
 
     elif data == "insurance":
         try:
