@@ -231,7 +231,10 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
             for i, row in enumerate(rows):
                 if row and row[0].lower() == name.lower():
                     sheet.update_cell(i + 1, 2, new_date)
-                    await update.message.reply_text(f"✅ Дата обновлена:\n{name} — {new_date}")
+                    keyboard = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("⬅️ Назад", callback_data="menu")]
+                    ])
+                    await update.message.reply_text(f"✅ Дата обновлена:\n{name} — {new_date}", reply_markup=keyboard)
                     return
             await update.message.reply_text("🚫 Машина не найдена.")
         except Exception as e:
