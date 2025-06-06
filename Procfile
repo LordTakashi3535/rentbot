@@ -1,1 +1,1 @@
-python bot.py
+rentbot:python bot.py
