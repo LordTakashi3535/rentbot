@@ -300,6 +300,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Ошибка получения отчёта: {e}")
             await query.message.reply_text("⚠️ Не удалось загрузить отчёт.")
+            
     elif re.match(r"report_(7|30)_details_page(\d+)", data):
         m = re.match(r"report_(7|30)_details_page(\d+)", data)
         days = int(m.group(1))
@@ -315,7 +316,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("⬅️ Назад", callback_data=f"report_{days}")]
         ])
 
-    await query.edit_message_text("Выберите подробности:", reply_markup=keyboard)
+        await query.edit_message_text("Выберите подробности:", reply_markup=keyboard)
     
     elif re.match(r"report_(7|30)_details_(income|expense)_page(\d+)", data):
         m = re.match(r"report_(7|30)_details_(income|expense)_page(\d+)", data)
