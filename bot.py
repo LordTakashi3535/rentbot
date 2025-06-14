@@ -26,7 +26,6 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 Telegram_Token = os.getenv("Telegram_Token")
-GROUP_CHAT_ID = os.getenv("GROUP_CHAT_ID")
 GOOGLE_CREDENTIALS_B64 = os.getenv("GOOGLE_CREDENTIALS_B64")
 SPREADSHEET_ID = "1qjVJZUqm1hT5IkrASq-_iL9cc4wDl8fdjvd7KDMWL-U"
 
@@ -319,7 +318,7 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
 
             try:
                 # Отправляем сообщение в группу (дублируем)
-                await context.bot.send_message(chat_id=GROUP_CHAT_ID, text=text, parse_mode="Markdown")
+                await context.bot.send_message(chat_id=-1002522776417, text=text, parse_mode="Markdown")
             except Exception as e:
                 logger.error(f"Ошибка отправки в группу: {e}")
 
