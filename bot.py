@@ -301,60 +301,68 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Ошибка получения отчёта: {e}")
             await query.message.reply_text("⚠️ Не удалось загрузить отчёт.")
     
+    
     elif re.match(r"report_(7|30)_details_(income|expense)_page(\d+)", data):
         m = re.match(r"report_(7|30)_details_(income|expense)_page(\d+)", data)
         days, detail_type, page = int(m.group(1)), m.group(2), int(m.group(3))
     
-        client = get_gspread_client()
-        now = datetime.datetime.now()
-        start_date = now - datetime.timedelta(days=days)
-        sheet_name = "Доход" if detail_type == "income" else "Расход"
-        sheet = client.open_by_key(SPREADSHEET_ID).worksheet(sheet_name)
-        rows = sheet.get_all_values()[1:]
+        try:
+            client = get_gspread_client()
+            now = datetime.datetime.now()
+            start_date = now - datetime.timedelta(days=days)
+            sheet_name = "Доход" if detail_type == "income" else "Расход"
+            sheet = client.open_by_key(SPREADSHEET_ID).worksheet(sheet_name)
+            rows = sheet.get_all_values()[1:]
     
-        filtered = []
-        for row in rows:
-            try:
-                dt = datetime.datetime.strptime(row[0].strip(), "%d.%m.%Y %H:%M")
-            except ValueError:
-                dt = datetime.datetime.strptime(row[0].strip(), "%d.%m.%Y")
-            if dt >= start_date:
-                filtered.append(row)
+            filtered = []
+            for row in rows:
+                try:
+                    dt = datetime.datetime.strptime(row[0].strip(), "%d.%m.%Y %H:%M")
+                except ValueError:
+                    dt = datetime.datetime.strptime(row[0].strip(), "%d.%m.%Y")
+                if dt >= start_date:
+                    filtered.append(row)
     
-        page_size = 10
-        total_pages = (len(filtered) + page_size - 1) // page_size
-        page = max(0, min(page, total_pages - 1))
-        page_rows = filtered[page*page_size:(page+1)*page_size]
+            page_size = 10
+            total_pages = (len(filtered) + page_size - 1) // page_size
+            page = max(0, min(page, total_pages - 1))
+            page_rows = filtered[page*page_size:(page+1)*page_size]
     
-        lines = []
-        for r in page_rows:
-            if detail_type == "income":
-                date, category = r[0], r[1] if len(r) > 1 else "-"
-                amount = (r[2] if len(r) > 2 and r[2] else r[3] if len(r) > 3 else "0").replace(" ", "").replace(",", ".")
-                desc = r[4] if len(r) > 4 else "-"
-                lines.append(f"📅 {date} | {category} | 🟢 {amount} | {desc}")
-            else:
-                date = r[0]
-                amount = (r[1] if len(r) > 1 and r[1] else r[2] if len(r) > 2 else "0").replace(" ", "").replace(",", ".")
-                desc = r[3] if len(r) > 3 else "-"
-                lines.append(f"📅 {date} | 🔴 -{amount} | {desc}")
+            lines = []
+            for r in page_rows:
+                if detail_type == "income":
+                    date = r[0]
+                    category = r[1] if len(r) > 1 else "-"
+                    amount = (r[2] if len(r) > 2 and r[2] else (r[3] if len(r) > 3 else "0")).replace(" ", "").replace(",", ".")
+                    desc = r[4] if len(r) > 4 else "-"
+                    lines.append(f"📅 {date} | {category} | 🟢 {amount} | {desc}")
+                else:
+                    date = r[0]
+                    amount = (r[1] if len(r) > 1 and r[1] else (r[2] if len(r) > 2 else "0")).replace(" ", "").replace(",", ".")
+                    desc = r[3] if len(r) > 3 else "-"
+                    lines.append(f"📅 {date} | 🔴 -{amount} | {desc}")
     
-        text = f"📋 Подробности ({'Доходов' if detail_type == 'income' else 'Расходов'}) за {days} дней:\n\n"
-        text += "\n".join(lines) if lines else "Данные не найдены."
+            text = f"📋 Подробности ({'Доходов' if detail_type == 'income' else 'Расходов'}) за {days} дней:\n\n"
+            text += "\n".join(lines) if lines else "Данные не найдены."
     
-        buttons = []
-        if page > 0:
-            buttons.append(InlineKeyboardButton("⬅️ Предыдущая", callback_data=f"report_{days}_details_{detail_type}_page{page-1}"))
-        if page < total_pages - 1:
-            buttons.append(InlineKeyboardButton("➡️ Следующая", callback_data=f"report_{days}_details_{detail_type}_page{page+1}"))
+            buttons = []
+            if page > 0:
+                buttons.append(InlineKeyboardButton("⬅️ Предыдущая", callback_data=f"report_{days}_details_{detail_type}_page{page-1}"))
+            if page < total_pages - 1:
+                buttons.append(InlineKeyboardButton("➡️ Следующая", callback_data=f"report_{days}_details_{detail_type}_page{page+1}"))
     
-        keyboard = InlineKeyboardMarkup([
-            buttons,
-            [InlineKeyboardButton("⬅️ Назад", callback_data=f"report_{days}_details_page0")],
-            [InlineKeyboardButton("⬅️ Главное меню", callback_data="menu")]
-        ])
+            keyboard = InlineKeyboardMarkup([
+                buttons,
+                [InlineKeyboardButton("⬅️ Назад", callback_data=f"report_{days}_details_page0")],
+                [InlineKeyboardButton("⬅️ Главное меню", callback_data="menu")]
+            ])
     
-        await query.edit_message_text(text, reply_markup=keyboard)
+            await query.edit_message_text(text, reply_markup=keyboard)
+    
+        except Exception as e:
+            logger.error(f"Ошибка загрузки подробностей отчёта: {e}")
+            await query.message.reply_text("⚠️ Не удалось загрузить подробности отчёта.")
+
 
 
 # Обработчик нажатия на кнопку "Меню" с клавиатуры — не отправляем текст, просто открываем меню
