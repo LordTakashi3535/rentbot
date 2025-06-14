@@ -435,7 +435,7 @@ async def check_reminders(app):
         except Exception as e:
             logger.error(f"Ошибка при проверке напоминаний: {e}")
 
-        await asyncio.sleep(86400)  # Ждем 24 часа
+        await asyncio.sleep(60)  # Ждем 24 часа
 
 
 async def on_startup(app):
