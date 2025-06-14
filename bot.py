@@ -153,7 +153,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(text, reply_markup=keyboard)
         except Exception as e:
             logger.error(f"Ошибка страховок: {e}")
-            await query.message.reply_text("⚠️ Не удалось получить данные по страховкам.")
+            await query.message.reply_text("⚠️ Не удалось получить данные по страховкам.", reply_markup=persistent_menu_keyboard())
 
     elif data == "tech":
         try:
@@ -175,7 +175,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(text, reply_markup=keyboard)
         except Exception as e:
             logger.error(f"Ошибка тех.осмотров: {e}")
-            await query.message.reply_text("⚠️ Не удалось получить данные по тех.осмотрам.")
+            await query.message.reply_text("⚠️ Не удалось получить данные по тех.осмотрам.", reply_markup=persistent_menu_keyboard())
 
     elif data == "edit_insurance":
         context.user_data["edit_type"] = "insurance"
@@ -201,7 +201,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(text, reply_markup=keyboard)
         except Exception as e:
             logger.error(f"Ошибка баланса: {e}")
-            await query.message.reply_text("⚠️ Не удалось получить баланс.")
+            await query.message.reply_text("⚠️ Не удалось получить баланс.", reply_markup=persistent_menu_keyboard())
 
 
 # Обработчик нажатия на кнопку "Меню" с клавиатуры — не отправляем текст, просто открываем меню
@@ -222,7 +222,7 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
         try:
             name, new_date = map(str.strip, text.split("-", 1))
             if not re.match(r"^\d{2}\.\d{2}\.\d{4}$", new_date):
-                await update.message.reply_text("❌ Некорректный формат даты. Используйте дд.мм.гггг")
+                await update.message.reply_text("❌ Некорректный формат даты. Используйте дд.мм.гггг", reply_markup=persistent_menu_keyboard())
                 return
             sheet_name = "Страховки" if edit_type == "insurance" else "ТехОсмотры"
             sheet = get_gspread_client().open_by_key(SPREADSHEET_ID).worksheet(sheet_name)
@@ -239,10 +239,10 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
                     await update.message.reply_text(f"✅ Дата обновлена:\n{name} — {new_date}", reply_markup=keyboard)
                     return
       
-            await update.message.reply_text("🚫 Машина не найдена.")
+            await update.message.reply_text("🚫 Машина не найдена.", reply_markup=persistent_menu_keyboard())
         except Exception as e:
             logger.error(f"Ошибка при обновлении: {e}")
-            await update.message.reply_text("❌ Ошибка обновления.")
+            await update.message.reply_text("❌ Ошибка обновления.", reply_markup=persistent_menu_keyboard())
         return
 
     action = context.user_data.get("action")
@@ -324,13 +324,11 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
 
         except Exception as e:
             logger.error(f"Ошибка записи: {e}")
-            await update.message.reply_text("⚠️ Ошибка записи в таблицу.")
+            await update.message.reply_text("⚠️ Ошибка записи в таблицу.", reply_markup=persistent_menu_keyboard())
 
 
 def main():
     application = ApplicationBuilder().token(Telegram_Token).build()
-
-    application.add_handler(CommandHandler("start", menu_command))
     application.add_handler(CommandHandler("menu", menu_command))
     application.add_handler(CallbackQueryHandler(handle_button))
     application.add_handler(MessageHandler(filters.Regex("^(Меню)$"), on_menu_button_pressed))
