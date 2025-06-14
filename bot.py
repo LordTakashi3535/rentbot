@@ -345,31 +345,31 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             page_rows = filtered[page*page_size:(page+1)*page_size]
     
             lines = []
-                for r in page_rows:
-                    date = r[0]
-                
-                    if detail_type == "income":
-                        category = r[1] if len(r) > 1 else "-"
-                        amount = (r[2] if len(r) > 2 and r[2] else (r[3] if len(r) > 3 else "0")).replace(" ", "").replace(",", ".")
-                        desc = r[4] if len(r) > 4 else "-"
-                
-                        # Определяем иконку категории
-                        if category.strip().lower() == "другое":
-                            category_icon = "🛠️"
-                        else:
-                            category_icon = "🚗"
-                
-                        lines.append(f"📅 {date} | {category_icon} {category} | 🟢 {amount} | 📝 {desc}")
-                
+            for r in page_rows:
+                date = r[0]
+            
+                if detail_type == "income":
+                    category = r[1] if len(r) > 1 else "-"
+                    amount = (r[2] if len(r) > 2 and r[2] else (r[3] if len(r) > 3 else "0")).replace(" ", "").replace(",", ".")
+                    desc = r[4] if len(r) > 4 else "-"
+            
+                    # Определяем иконку категории
+                    if category.strip().lower() == "другое":
+                        category_icon = "🛠️"
                     else:
-                        amount = (r[1] if len(r) > 1 and r[1] else (r[2] if len(r) > 2 else "0")).replace(" ", "").replace(",", ".")
-                        desc = r[3] if len(r) > 3 else "-"
-                        
-                        # Здесь можно также добавить иконку к описанию (если хочешь):
-                        lines.append(f"📅 {date} | 🔴 -{amount} | 📝 {desc}")
-                
-                text = f"📋 Подробности ({'Доходов' if detail_type == 'income' else 'Расходов'}) за {days} дней:\n\n"
-                text += "\n".join(lines) if lines else "Данные не найдены."
+                        category_icon = "🚗"
+            
+                    lines.append(f"📅 {date} | {category_icon} {category} | 🟢 {amount} | 📝 {desc}")
+            
+                else:
+                    amount = (r[1] if len(r) > 1 and r[1] else (r[2] if len(r) > 2 else "0")).replace(" ", "").replace(",", ".")
+                    desc = r[3] if len(r) > 3 else "-"
+                    
+                    # Здесь можно также добавить иконку к описанию (если хочешь):
+                    lines.append(f"📅 {date} | 🔴 -{amount} | 📝 {desc}")
+            
+            text = f"📋 Подробности ({'Доходов' if detail_type == 'income' else 'Расходов'}) за {days} дней:\n\n"
+            text += "\n".join(lines) if lines else "Данные не найдены."
 
             buttons = []
             if page > 0:
