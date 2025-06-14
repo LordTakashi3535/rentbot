@@ -240,17 +240,17 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Ошибка баланса: {e}")
             await query.message.reply_text("⚠️ Не удалось получить баланс.")
             
-    elif data.startswith("report_7_details") or data.startswith("report_30_details"):
-        days = 7 if data.startswith("report_7") else 30
+    elif "report_7" in data or "report_30" in data:
+        days = 7 if "report_7" in data else 30
         match = re.search(r"_page_(\d+)", data)
         page = int(match.group(1)) if match else 0
         per_page = 10
-
+    
         try:
             client = get_gspread_client()
             now = datetime.datetime.now()
             start_date = now - datetime.timedelta(days=days)
-
+    
             def get_details(worksheet_name, is_income):
                 sheet = client.open_by_key(SPREADSHEET_ID).worksheet(worksheet_name)
                 rows = sheet.get_all_values()[1:]
@@ -273,45 +273,47 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 cash = row[2] if len(row) > 2 else ""
                                 description = row[3] if len(row) > 3 else "-"
                                 category = "—"
-
+    
                             source = "Карта" if card else "Наличные" if cash else "-"
                             amount = card or cash or "0"
-                            details.append(f"{'📥' if is_income else '📤'} {dt.strftime('%d.%m %H:%M')} • {amount} ({source})\n📝 {description}")
+                            text = f"{'📥' if is_income else '📤'} {dt.strftime('%d.%m %H:%M')} • {amount} ({source})\n📝 {description}"
+                            details.append((dt, text))
                     except Exception as e:
                         logger.warning(f"Ошибка строки: {row} — {e}")
                         continue
                 return details
-
+    
             income_details = get_details("Доход", True)
             expense_details = get_details("Расход", False)
-
-            all_details = sorted(income_details + expense_details)  # по дате
+    
+            all_details = sorted(income_details + expense_details, key=lambda x: x[0], reverse=True)
             total_pages = (len(all_details) - 1) // per_page + 1
-            current_details = all_details[page * per_page: (page + 1) * per_page]
-
+            current_details = [d[1] for d in all_details[page * per_page: (page + 1) * per_page]]
+    
             if not current_details:
                 await query.edit_message_text(f"📋 Нет данных за последние {days} дней.")
                 return
-
+    
             text = f"📋 Подробности за *{days} дней* (стр. {page + 1}/{total_pages}):\n\n" + "\n\n".join(current_details)
-
+    
             # Кнопки навигации
             nav_buttons = []
             if page > 0:
                 nav_buttons.append(InlineKeyboardButton("⬅️ Назад", callback_data=f"report_{days}_details_page_{page - 1}"))
             if page < total_pages - 1:
                 nav_buttons.append(InlineKeyboardButton("➡️ Вперёд", callback_data=f"report_{days}_details_page_{page + 1}"))
-
+    
             keyboard = InlineKeyboardMarkup([
                 nav_buttons,
-                [InlineKeyboardButton("🔙 Меню", callback_data="menu")]
+                [InlineKeyboardButton("⬅️ Назад", callback_data="menu")]
             ])
-
+    
             await query.edit_message_text(text, reply_markup=keyboard, parse_mode="Markdown")
-
+    
         except Exception as e:
             logger.error(f"Ошибка получения подробностей: {e}")
             await query.message.reply_text("⚠️ Не удалось загрузить подробности.")
+
 
 # Обработчик нажатия на кнопку "Меню" с клавиатуры — не отправляем текст, просто открываем меню
 async def on_menu_button_pressed(update: Update, context: ContextTypes.DEFAULT_TYPE):
