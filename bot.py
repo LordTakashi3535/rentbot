@@ -222,7 +222,7 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
         try:
             name, new_date = map(str.strip, text.split("-", 1))
             if not re.match(r"^\d{2}\.\d{2}\.\d{4}$", new_date):
-                await update.message.reply_text("❌ Некорректный формат даты. Используйте дд.мм.гггг")
+                await update.message.reply_text("❌ Некорректный формат даты. Используйте дд.мм.гггг",callback_data="edit_insurance")
                 return
             sheet_name = "Страховки" if edit_type == "insurance" else "ТехОсмотры"
             sheet = get_gspread_client().open_by_key(SPREADSHEET_ID).worksheet(sheet_name)
