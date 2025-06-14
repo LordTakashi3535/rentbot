@@ -301,101 +301,55 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Ошибка получения отчёта: {e}")
             await query.message.reply_text("⚠️ Не удалось загрузить отчёт.")
     
-    elif re.match(r"report_(7|30)_details_page(\d+)", data):
-        # Парсим дни и номер страницы из callback_data
-        m = re.match(r"report_(7|30)_details_page(\d+)", data)
-        days = int(m.group(1))
-        page = int(m.group(2))
-    
-        # Сохраняем в user_data для удобства
-        context.user_data["report_days"] = days
-        context.user_data["report_page"] = page
-    
-        # Показываем выбор доходы/расходы
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📥 Доходы", callback_data=f"report_{days}_details_income_page{page}")],
-            [InlineKeyboardButton("📤 Расходы", callback_data=f"report_{days}_details_expense_page{page}")],
-            [InlineKeyboardButton("⬅️ Назад", callback_data=f"report_{days}")],
-        ])
-    
-        await query.edit_message_text("Выберите подробности:", reply_markup=keyboard)
-    
     elif re.match(r"report_(7|30)_details_(income|expense)_page(\d+)", data):
         m = re.match(r"report_(7|30)_details_(income|expense)_page(\d+)", data)
-        days = int(m.group(1))
-        detail_type = m.group(2)  # income или expense
-        page = int(m.group(3))
+        days, detail_type, page = int(m.group(1)), m.group(2), int(m.group(3))
     
         client = get_gspread_client()
         now = datetime.datetime.now()
         start_date = now - datetime.timedelta(days=days)
-    
-        # Лист для чтения
         sheet_name = "Доход" if detail_type == "income" else "Расход"
-    
         sheet = client.open_by_key(SPREADSHEET_ID).worksheet(sheet_name)
         rows = sheet.get_all_values()[1:]
     
-        # Фильтруем по дате
         filtered = []
         for row in rows:
             try:
-                date_str = row[0].strip()
-                try:
-                    dt = datetime.datetime.strptime(date_str, "%d.%m.%Y %H:%M")
-                except ValueError:
-                    dt = datetime.datetime.strptime(date_str, "%d.%m.%Y")
-                if dt >= start_date:
-                    filtered.append(row)
-            except Exception:
-                continue
+                dt = datetime.datetime.strptime(row[0].strip(), "%d.%m.%Y %H:%M")
+            except ValueError:
+                dt = datetime.datetime.strptime(row[0].strip(), "%d.%m.%Y")
+            if dt >= start_date:
+                filtered.append(row)
     
-        # Пагинация
-        page_size = 5
+        page_size = 10
         total_pages = (len(filtered) + page_size - 1) // page_size
-        page = max(0, min(page, total_pages - 1))  # ограничиваем диапазон
-    
-        # Формируем текст для текущей страницы
-        start_idx = page * page_size
-        end_idx = start_idx + page_size
-        page_rows = filtered[start_idx:end_idx]
+        page = max(0, min(page, total_pages - 1))
+        page_rows = filtered[page*page_size:(page+1)*page_size]
     
         lines = []
         for r in page_rows:
             if detail_type == "income":
-                # Дата, категория, сумма (карта/нал), описание
-                date_str = r[0]
-                category = r[1] if len(r) > 1 else "-"
-                card = r[2] if len(r) > 2 else ""
-                cash = r[3] if len(r) > 3 else ""
-                amount = card or cash or "0"
-                description = r[4] if len(r) > 4 else "-"
-                lines.append(f"📅 {date_str} | {category} | {amount} | {description}")
+                date, category = r[0], r[1] if len(r) > 1 else "-"
+                amount = (r[2] if len(r) > 2 and r[2] else r[3] if len(r) > 3 else "0").replace(" ", "").replace(",", ".")
+                desc = r[4] if len(r) > 4 else "-"
+                lines.append(f"📅 {date} | {category} | 🟢 {amount} | {desc}")
             else:
-                # Расход: Дата, сумма карта, сумма нал, описание
-                date_str = r[0]
-                card = r[1] if len(r) > 1 else ""
-                cash = r[2] if len(r) > 2 else ""
-                description = r[3] if len(r) > 3 else "-"
-                amount = card or cash or "0"
-                lines.append(f"📅 {date_str} | -{amount} | {description}")
+                date = r[0]
+                amount = (r[1] if len(r) > 1 and r[1] else r[2] if len(r) > 2 else "0").replace(" ", "").replace(",", ".")
+                desc = r[3] if len(r) > 3 else "-"
+                lines.append(f"📅 {date} | 🔴 -{amount} | {desc}")
     
-        if not lines:
-            text = "Данные не найдены."
-        else:
-            text = f"📋 Подробности ({detail_type.capitalize()}) за {days} дней:\n\n" + "\n".join(lines)
+        text = f"📋 Подробности ({'Доходов' if detail_type == 'income' else 'Расходов'}) за {days} дней:\n\n"
+        text += "\n".join(lines) if lines else "Данные не найдены."
     
-        # Кнопки навигации и назад
         buttons = []
-    
         if page > 0:
             buttons.append(InlineKeyboardButton("⬅️ Предыдущая", callback_data=f"report_{days}_details_{detail_type}_page{page-1}"))
         if page < total_pages - 1:
             buttons.append(InlineKeyboardButton("➡️ Следующая", callback_data=f"report_{days}_details_{detail_type}_page{page+1}"))
     
-        nav_row = buttons if buttons else []
         keyboard = InlineKeyboardMarkup([
-            nav_row,
+            buttons,
             [InlineKeyboardButton("⬅️ Назад", callback_data=f"report_{days}_details_page0")],
             [InlineKeyboardButton("⬅️ Главное меню", callback_data="menu")]
         ])
