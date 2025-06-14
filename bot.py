@@ -147,8 +147,24 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ]))
                 return
             text = "🚗 Страховки:\n"
+            today = datetime.datetime.now().date()
             for i, row in enumerate(rows):
-                text += f"{i+1}. {row[0]} до {row[1] if len(row) > 1 else '—'}\n"
+                name = row[0]
+                date_str = row[1] if len(row) > 1 else None
+                days_left = "—"
+                if date_str:
+                    try:
+                        deadline = datetime.datetime.strptime(date_str, "%d.%m.%Y").date()
+                        delta = (deadline - today).days
+                        if delta > 0:
+                            days_left = f"осталось {delta} дней"
+                        elif delta == 0:
+                            days_left = "сегодня"
+                        else:
+                            days_left = f"просрочено на {abs(delta)} дней"
+                    except ValueError:
+                        days_left = "неверный формат даты"
+                text += f"{i+1}. {name} до {date_str or '—'} ({days_left})\n"
 
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("✏️ Изменить", callback_data="edit_insurance")],
@@ -169,8 +185,25 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ]))
                 return
             text = "🧰 Тех.Осмотры:\n"
+            today = datetime.datetime.now().date()
             for i, row in enumerate(rows):
-                text += f"{i+1}. {row[0]} до {row[1] if len(row) > 1 else '—'}\n"
+                name = row[0]
+                date_str = row[1] if len(row) > 1 else None
+                days_left = "—"
+                if date_str:
+                    try:
+                        deadline = datetime.datetime.strptime(date_str, "%d.%m.%Y").date()
+                        delta = (deadline - today).days
+                        if delta > 0:
+                            days_left = f"осталось {delta} дней"
+                        elif delta == 0:
+                            days_left = "сегодня"
+                        else:
+                            days_left = f"просрочено на {abs(delta)} дней"
+                    except ValueError:
+                        days_left = "неверный формат даты"
+                text += f"{i+1}. {name} до {date_str or '—'} ({days_left})\n"
+
 
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("✏️ Изменить", callback_data="edit_tech")],
@@ -435,7 +468,7 @@ async def check_reminders(app):
         except Exception as e:
             logger.error(f"Ошибка при проверке напоминаний: {e}")
 
-        await asyncio.sleep(60)  # Ждем 24 часа
+        await asyncio.sleep(86400)  # Ждем 24 часа
 
 
 async def on_startup(app):
