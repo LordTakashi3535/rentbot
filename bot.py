@@ -29,8 +29,6 @@ Telegram_Token = os.getenv("Telegram_Token")
 GOOGLE_CREDENTIALS_B64 = os.getenv("GOOGLE_CREDENTIALS_B64")
 SPREADSHEET_ID = "1qjVJZUqm1hT5IkrASq-_iL9cc4wDl8fdjvd7KDMWL-U"
 
-GROUP_CHAT_ID = int(os.getenv("GROUP_CHAT_ID"))  # <-- ID твоей группы, передай через переменную окружения
-
 
 def get_gspread_client():
     creds_json = base64.b64decode(GOOGLE_CREDENTIALS_B64).decode("utf-8")
@@ -54,6 +52,7 @@ def get_data():
         return {}
 
 
+# Статичная клавиатура с кнопкой "Меню" под полем ввода
 def persistent_menu_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[["Меню"]],
@@ -62,6 +61,7 @@ def persistent_menu_keyboard():
     )
 
 
+# Показываем меню (inline кнопки) и добавляем кнопку "Меню" под полем ввода
 async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     inline_keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("📊 Баланс", callback_data="balance")],
@@ -75,6 +75,7 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if update.message:
         await update.message.reply_text("Выберите действие:", reply_markup=inline_keyboard)
+        # Просто клавиатура без дополнительного текста
         await update.message.reply_text("", reply_markup=reply_kb)
     elif update.callback_query:
         await update.callback_query.edit_message_text("Выберите действие:", reply_markup=inline_keyboard)
@@ -122,16 +123,15 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["action"] = "expense"
         context.user_data["step"] = "amount"
         await query.edit_message_text("Введите сумму расхода:", reply_markup=cancel_keyboard())
-
+        
     elif data == "source_card":
         context.user_data["source"] = "Карта"
         context.user_data["step"] = "description"
         await query.edit_message_text("Введите описание:")
-
     elif data == "source_cash":
         context.user_data["source"] = "Наличные"
         context.user_data["step"] = "description"
-        await query.edit_message_text("Введите описание:")
+        await query.edit_message_text("Введите описание:")    
 
     elif data == "insurance":
         try:
@@ -204,6 +204,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("⚠️ Не удалось получить баланс.")
 
 
+# Обработчик нажатия на кнопку "Меню" с клавиатуры — не отправляем текст, просто открываем меню
 async def on_menu_button_pressed(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await menu_command(update, context)
 
@@ -234,32 +235,37 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
                     keyboard = InlineKeyboardMarkup([
                         [InlineKeyboardButton("⬅️ Назад", callback_data="menu")]
                     ])
-                    await update.message.reply_text("✅ Обновлено.", reply_markup=keyboard)
-                    return await menu_command(update, context)
 
-            await update.message.reply_text("❌ Машина не найдена.")
+                    await update.message.reply_text(f"✅ Дата обновлена:\n{name} — {new_date}", reply_markup=keyboard)
+                    return
+      
+            await update.message.reply_text("🚫 Машина не найдена.")
         except Exception as e:
-            logger.error(f"Ошибка редактирования: {e}")
-            await update.message.reply_text("⚠️ Ошибка обработки данных.")
+            logger.error(f"Ошибка при обновлении: {e}")
+            await update.message.reply_text("❌ Ошибка обновления.")
         return
 
-    step = context.user_data.get("step")
     action = context.user_data.get("action")
+    step = context.user_data.get("step")
+
+    if not action or not step:
+        return
 
     if step == "amount":
-        if not text.isdigit():
-            await update.message.reply_text("❌ Введите сумму цифрами.")
-            return
-        context.user_data["amount"] = text
-
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Карта", callback_data="source_card"),
-             InlineKeyboardButton("Наличные", callback_data="source_cash")],
-            [InlineKeyboardButton("❌ Отмена", callback_data="cancel")]
-        ])
-
-        context.user_data["step"] = "source"
-        await update.message.reply_text("Выберите источник:", reply_markup=keyboard)
+        try:
+            amount = float(text.replace(",", "."))
+            if amount <= 0:
+                raise ValueError("Сумма должна быть положительной")
+            context.user_data["amount"] = amount
+            context.user_data["step"] = "source"
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("💳 Карта", callback_data="source_card")],
+                [InlineKeyboardButton("💵 Наличные", callback_data="source_cash")],
+                [InlineKeyboardButton("❌ Отмена", callback_data="cancel")]
+            ])
+            await update.message.reply_text("Выберите источник:", reply_markup=keyboard)
+        except ValueError:
+            await update.message.reply_text("⚠️ Введите положительное число (пример: 1200.50)")
 
     elif step == "description":
         description = text
@@ -273,48 +279,32 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
 
             if action == "income":
                 sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Доход")
-                row = [now, category, "", "", description]
+                row = [now, category, "", "", description]  # C и D будут позже
 
                 if source == "Карта":
-                    row[2] = amount
+                    row[2] = amount  # C
                 else:
-                    row[3] = amount
+                    row[3] = amount  # D
 
                 sheet.append_row(row)
 
-                text_resp = (
-                    f"✅ Добавлено в *Доход*:\n"
-                    f"📅 {now}\n"
-                    f"🏷 {category}\n"
-                    f"💰 {amount} ({source})\n"
-                    f"📝 {description}"
-                )
+                text = f"✅ Добавлено в *Доход*:\n📅 {now}\n🏷 {category}\n💰 {amount} ({source})\n📝 {description}"
 
             else:
                 sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Расход")
-                row = [now, "", "", description]
+                row = [now, "", "", description]  # B и C
 
                 if source == "Карта":
-                    row[1] = amount
+                    row[1] = amount  # B
                 else:
-                    row[2] = amount
+                    row[2] = amount  # C
 
                 sheet.append_row(row)
 
-                text_resp = (
-                    f"✅ Добавлено в *Расход*:\n"
-                    f"📅 {now}\n"
-                    f"💸 -{amount} ({source})\n"
-                    f"📝 {description}"
-                )
+                text = f"✅ Добавлено в *Расход*:\n📅 {now}\n💸 -{amount} ({source})\n📝 {description}"
 
             summary = get_data()
-            text_resp += (
-                f"\n\n📊 Баланс:\n"
-                f"💼 {summary.get('Баланс', '—')}\n"
-                f"💳 {summary.get('Карта', '—')}\n"
-                f"💵 {summary.get('Наличные', '—')}"
-            )
+            text += f"\n\n📊 Баланс:\n💼 {summary.get('Баланс', '—')}\n💳 {summary.get('Карта', '—')}\n💵 {summary.get('Наличные', '—')}"
 
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("📥 Доход", callback_data="add_income"),
@@ -322,39 +312,26 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
                 [InlineKeyboardButton("⬅️ Назад", callback_data="menu")]
             ])
 
-            # Отправляем копию сообщения в группу
-            try:
-                await context.bot.send_message(chat_id=GROUP_CHAT_ID, text=text_resp, parse_mode="Markdown")
-            except Exception as e:
-                logger.error(f"Ошибка отправки сообщения в группу: {e}")
-
             context.user_data.clear()
-            await update.message.reply_text(text_resp, reply_markup=keyboard, parse_mode="Markdown")
+
+            await update.message.reply_text(text, reply_markup=keyboard, parse_mode="Markdown")
 
         except Exception as e:
             logger.error(f"Ошибка записи: {e}")
             await update.message.reply_text("⚠️ Ошибка записи в таблицу.")
 
 
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.text.lower() == "меню":
-        await menu_command(update, context)
-    else:
-        await handle_amount_description(update, context)
-
-
-async def main():
+def main():
     application = ApplicationBuilder().token(Telegram_Token).build()
 
     application.add_handler(CommandHandler("start", menu_command))
     application.add_handler(CommandHandler("menu", menu_command))
-
     application.add_handler(CallbackQueryHandler(handle_button))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    application.add_handler(MessageHandler(filters.Regex("^(Меню)$"), on_menu_button_pressed))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_amount_description))
 
-    await application.run_polling()
+    application.run_polling()
 
 
 if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
+    main()
