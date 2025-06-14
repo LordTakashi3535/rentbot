@@ -65,6 +65,8 @@ def persistent_menu_keyboard():
 async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     inline_keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("📊 Баланс", callback_data="balance")],
+        [InlineKeyboardButton("📈 Отчёт 7 дней", callback_data="report_7"),
+         InlineKeyboardButton("📊 Отчёт 30 дней", callback_data="report_30")],
         [InlineKeyboardButton("📥 Доход", callback_data="add_income"),
          InlineKeyboardButton("📤 Расход", callback_data="add_expense")],
         [InlineKeyboardButton("🛡 Страховки", callback_data="insurance"),
@@ -202,6 +204,47 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Ошибка баланса: {e}")
             await query.message.reply_text("⚠️ Не удалось получить баланс.")
+            
+    elif data in ["report_7", "report_30"]:
+        days = 7 if data == "report_7" else 30
+        try:
+            client = get_gspread_client()
+            now = datetime.datetime.now()
+            start_date = now - datetime.timedelta(days=days)
+
+            def parse_rows(worksheet_name, is_income):
+                sheet = client.open_by_key(SPREADSHEET_ID).worksheet(worksheet_name)
+                rows = sheet.get_all_values()[1:]  # Пропускаем заголовок
+                total = 0.0
+                for row in rows:
+                    try:
+                        date_str = row[0]
+                        dt = datetime.datetime.strptime(date_str, "%d.%m.%Y %H:%M")
+                        if dt >= start_date:
+                            amount = float(row[2] if is_income else row[1] or 0) + float(row[3] if is_income else row[2] or 0)
+                            total += amount
+                    except:
+                        continue
+                return total
+
+            income_total = parse_rows("Доход", is_income=True)
+            expense_total = parse_rows("Расход", is_income=False)
+            net = income_total - expense_total
+
+            report_text = (
+                f"📅 Отчёт за *{days} дней*:\n\n"
+                f"📥 Доход: *{income_total:.2f}*\n"
+                f"📤 Расход: *{expense_total:.2f}*\n"
+                f"💰 Чистый доход: *{net:.2f}*"
+            )
+
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ Назад", callback_data="menu")]
+            ])
+            await query.edit_message_text(report_text, reply_markup=keyboard, parse_mode="Markdown")
+        except Exception as e:
+            logger.error(f"Ошибка отчёта: {e}")
+            await query.message.reply_text("⚠️ Не удалось получить данные для отчёта.")
 
 
 # Обработчик нажатия на кнопку "Меню" с клавиатуры — не отправляем текст, просто открываем меню
