@@ -240,79 +240,99 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Ошибка баланса: {e}")
             await query.message.reply_text("⚠️ Не удалось получить баланс.")
             
-    elif "report_7" in data or "report_30" in data:
-        days = 7 if "report_7" in data else 30
-        match = re.search(r"_page_(\d+)", data)
-        page = int(match.group(1)) if match else 0
+    elif data in ["report_7", "report_30"]:
+        days = 7 if data == "report_7" else 30
+        # Показываем кнопку "Подробности"
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📋 Подробности", callback_data=f"report_{days}_details")],
+            [InlineKeyboardButton("⬅️ Назад", callback_data="menu")]
+        ])
+        await query.edit_message_text(f"📋 Отчёт за последние {days} дней.", reply_markup=keyboard)
+    
+    elif data in ["report_7_details", "report_30_details"]:
+        days = 7 if data == "report_7_details" else 30
+        # Показываем выбор доходов или расходов
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("Доходы", callback_data=f"report_{days}_income_page_0"),
+                InlineKeyboardButton("Расходы", callback_data=f"report_{days}_expense_page_0")
+            ],
+            [InlineKeyboardButton("⬅️ Назад", callback_data=f"report_{days}")]
+        ])
+        await query.edit_message_text(f"📋 Выберите тип отчёта за {days} дней:", reply_markup=keyboard)
+    
+    elif re.match(r"report_(7|30)_(income|expense)_page_(\d+)", data):
+        match = re.match(r"report_(7|30)_(income|expense)_page_(\d+)", data)
+        days = int(match.group(1))
+        report_type = match.group(2)  # income или expense
+        page = int(match.group(3))
         per_page = 10
     
         try:
             client = get_gspread_client()
             now = datetime.datetime.now()
             start_date = now - datetime.timedelta(days=days)
+            sheet_name = "Доход" if report_type == "income" else "Расход"
+            is_income = (report_type == "income")
     
-            def get_details(worksheet_name, is_income):
-                sheet = client.open_by_key(SPREADSHEET_ID).worksheet(worksheet_name)
-                rows = sheet.get_all_values()[1:]
-                details = []
-                for row in rows:
+            sheet = client.open_by_key(SPREADSHEET_ID).worksheet(sheet_name)
+            rows = sheet.get_all_values()[1:]
+    
+            details = []
+            for row in rows:
+                try:
+                    date_str = row[0].strip()
                     try:
-                        date_str = row[0].strip()
-                        try:
-                            dt = datetime.datetime.strptime(date_str, "%d.%m.%Y %H:%M")
-                        except ValueError:
-                            dt = datetime.datetime.strptime(date_str, "%d.%m.%Y")
-                        if dt >= start_date:
-                            if is_income:
-                                category = row[1] if len(row) > 1 else "-"
-                                card = row[2] if len(row) > 2 else ""
-                                cash = row[3] if len(row) > 3 else ""
-                                description = row[4] if len(row) > 4 else "-"
-                            else:
-                                card = row[1] if len(row) > 1 else ""
-                                cash = row[2] if len(row) > 2 else ""
-                                description = row[3] if len(row) > 3 else "-"
-                                category = "—"
+                        dt = datetime.datetime.strptime(date_str, "%d.%m.%Y %H:%M")
+                    except ValueError:
+                        dt = datetime.datetime.strptime(date_str, "%d.%m.%Y")
+                    if dt >= start_date:
+                        if is_income:
+                            category = row[1] if len(row) > 1 else "-"
+                            card = row[2] if len(row) > 2 else ""
+                            cash = row[3] if len(row) > 3 else ""
+                            description = row[4] if len(row) > 4 else "-"
+                        else:
+                            card = row[1] if len(row) > 1 else ""
+                            cash = row[2] if len(row) > 2 else ""
+                            description = row[3] if len(row) > 3 else "-"
+                            category = "—"
     
-                            source = "Карта" if card else "Наличные" if cash else "-"
-                            amount = card or cash or "0"
-                            text = f"{'📥' if is_income else '📤'} {dt.strftime('%d.%m %H:%M')} • {amount} ({source})\n📝 {description}"
-                            details.append((dt, text))
-                    except Exception as e:
-                        logger.warning(f"Ошибка строки: {row} — {e}")
-                        continue
-                return details
+                        source = "Карта" if card else "Наличные" if cash else "-"
+                        amount = card or cash or "0"
+                        text = f"{'📥' if is_income else '📤'} {dt.strftime('%d.%m %H:%M')} • {amount} ({source})\n📝 {description}"
+                        details.append((dt, text))
+                except Exception as e:
+                    logger.warning(f"Ошибка строки: {row} — {e}")
+                    continue
     
-            income_details = get_details("Доход", True)
-            expense_details = get_details("Расход", False)
-    
-            all_details = sorted(income_details + expense_details, key=lambda x: x[0], reverse=True)
-            total_pages = (len(all_details) - 1) // per_page + 1
-            current_details = [d[1] for d in all_details[page * per_page: (page + 1) * per_page]]
+            details = sorted(details, key=lambda x: x[0], reverse=True)
+            total_pages = (len(details) - 1) // per_page + 1
+            current_details = [d[1] for d in details[page * per_page:(page + 1) * per_page]]
     
             if not current_details:
                 await query.edit_message_text(f"📋 Нет данных за последние {days} дней.")
                 return
     
-            text = f"📋 Подробности за *{days} дней* (стр. {page + 1}/{total_pages}):\n\n" + "\n\n".join(current_details)
+            text = f"📋 {report_type.capitalize()} за *{days} дней* (стр. {page + 1}/{total_pages}):\n\n" + "\n\n".join(current_details)
     
-            # Кнопки навигации
             nav_buttons = []
             if page > 0:
-                nav_buttons.append(InlineKeyboardButton("⬅️ Назад", callback_data=f"report_{days}_details_page_{page - 1}"))
+                nav_buttons.append(InlineKeyboardButton("⬅️ Назад", callback_data=f"report_{days}_{report_type}_page_{page - 1}"))
             if page < total_pages - 1:
-                nav_buttons.append(InlineKeyboardButton("➡️ Вперёд", callback_data=f"report_{days}_details_page_{page + 1}"))
+                nav_buttons.append(InlineKeyboardButton("➡️ Вперёд", callback_data=f"report_{days}_{report_type}_page_{page + 1}"))
     
             keyboard = InlineKeyboardMarkup([
                 nav_buttons,
-                [InlineKeyboardButton("⬅️ Назад", callback_data="menu")]
+                [InlineKeyboardButton("⬅️ Назад", callback_data=f"report_{days}_details")]
             ])
     
             await query.edit_message_text(text, reply_markup=keyboard, parse_mode="Markdown")
     
         except Exception as e:
-            logger.error(f"Ошибка получения подробностей: {e}")
-            await query.message.reply_text("⚠️ Не удалось загрузить подробности.")
+            logger.error(f"Ошибка получения данных отчёта: {e}")
+            await query.message.reply_text("⚠️ Не удалось загрузить данные отчёта.")
+
 
 
 # Обработчик нажатия на кнопку "Меню" с клавиатуры — не отправляем текст, просто открываем меню
