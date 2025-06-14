@@ -65,12 +65,12 @@ def persistent_menu_keyboard():
 async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     inline_keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("📊 Баланс", callback_data="balance")],
-        [InlineKeyboardButton("📈 Отчёт 7 дней", callback_data="report_7"),
-         InlineKeyboardButton("📊 Отчёт 30 дней", callback_data="report_30")],
         [InlineKeyboardButton("📥 Доход", callback_data="add_income"),
          InlineKeyboardButton("📤 Расход", callback_data="add_expense")],
         [InlineKeyboardButton("🛡 Страховки", callback_data="insurance"),
-         InlineKeyboardButton("🧰 Тех.Осмотры", callback_data="tech")]
+         InlineKeyboardButton("🧰 Тех.Осмотры", callback_data="tech")],
+        [InlineKeyboardButton("📈 Отчёт 7 дней", callback_data="report_7"),
+         InlineKeyboardButton("📊 Отчёт 30 дней", callback_data="report_30")]
     ])
 
     reply_kb = persistent_menu_keyboard()
@@ -211,33 +211,47 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             client = get_gspread_client()
             now = datetime.datetime.now()
             start_date = now - datetime.timedelta(days=days)
-
+    
             def parse_rows(worksheet_name, is_income):
                 sheet = client.open_by_key(SPREADSHEET_ID).worksheet(worksheet_name)
                 rows = sheet.get_all_values()[1:]  # Пропускаем заголовок
                 total = 0.0
                 for row in rows:
                     try:
-                        date_str = row[0]
-                        dt = datetime.datetime.strptime(date_str, "%d.%m.%Y %H:%M")
+                        date_str = row[0].strip()
+                        # Пытаемся распарсить дату с временем или без времени
+                        try:
+                            dt = datetime.datetime.strptime(date_str, "%d.%m.%Y %H:%M")
+                        except ValueError:
+                            dt = datetime.datetime.strptime(date_str, "%d.%m.%Y")
                         if dt >= start_date:
-                            amount = float(row[2] if is_income else row[1] or 0) + float(row[3] if is_income else row[2] or 0)
-                            total += amount
-                    except:
+                            # Входят 2 колонки с суммами (карта и наличные)
+                            if is_income:
+                                card_str = row[2].replace(",", ".") if len(row) > 2 else "0"
+                                cash_str = row[3].replace(",", ".") if len(row) > 3 else "0"
+                            else:
+                                card_str = row[1].replace(",", ".") if len(row) > 1 else "0"
+                                cash_str = row[2].replace(",", ".") if len(row) > 2 else "0"
+                            card = float(card_str) if card_str else 0.0
+                            cash = float(cash_str) if cash_str else 0.0
+                            total += card + cash
+                    except Exception as e:
+                        # Логируем ошибку, но продолжаем обработку
+                        logger.warning(f"Ошибка обработки строки {row}: {e}")
                         continue
                 return total
-
+    
             income_total = parse_rows("Доход", is_income=True)
             expense_total = parse_rows("Расход", is_income=False)
             net = income_total - expense_total
-
+    
             report_text = (
                 f"📅 Отчёт за *{days} дней*:\n\n"
                 f"📥 Доход: *{income_total:.2f}*\n"
                 f"📤 Расход: *{expense_total:.2f}*\n"
                 f"💰 Чистый доход: *{net:.2f}*"
             )
-
+    
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("⬅️ Назад", callback_data="menu")]
             ])
@@ -245,7 +259,6 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Ошибка отчёта: {e}")
             await query.message.reply_text("⚠️ Не удалось получить данные для отчёта.")
-
 
 # Обработчик нажатия на кнопку "Меню" с клавиатуры — не отправляем текст, просто открываем меню
 async def on_menu_button_pressed(update: Update, context: ContextTypes.DEFAULT_TYPE):
