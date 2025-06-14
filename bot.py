@@ -390,7 +390,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
                     amount = amount.replace(" ", "").replace(",", ".")
             
-                    lines.append(f"📅 {date} | 🔴 -{source_emoji} {amount} | 📝 {desc}")
+                    lines.append(f"📅 {date} | 🔴 {source_emoji} -{amount} | 📝 {desc}")
             
             text = f"📋 Подробности ({'Доходов' if detail_type == 'income' else 'Расходов'}) за {days} дней:\n\n"
             text += "\n".join(lines) if lines else "Данные не найдены."
