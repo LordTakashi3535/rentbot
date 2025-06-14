@@ -153,7 +153,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(text, reply_markup=keyboard)
         except Exception as e:
             logger.error(f"Ошибка страховок: {e}")
-            await query.message.reply_text("⚠️ Не удалось получить данные по страховкам.",  callback_data="menu"())
+            await query.message.reply_text("⚠️ Не удалось получить данные по страховкам.")
 
     elif data == "tech":
         try:
@@ -175,7 +175,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(text, reply_markup=keyboard)
         except Exception as e:
             logger.error(f"Ошибка тех.осмотров: {e}")
-            await query.message.reply_text("⚠️ Не удалось получить данные по тех.осмотрам.",  callback_data="menu"())
+            await query.message.reply_text("⚠️ Не удалось получить данные по тех.осмотрам.")
 
     elif data == "edit_insurance":
         context.user_data["edit_type"] = "insurance"
@@ -201,7 +201,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(text, reply_markup=keyboard)
         except Exception as e:
             logger.error(f"Ошибка баланса: {e}")
-            await query.message.reply_text("⚠️ Не удалось получить баланс.",  callback_data="menu"())
+            await query.message.reply_text("⚠️ Не удалось получить баланс.")
 
 
 # Обработчик нажатия на кнопку "Меню" с клавиатуры — не отправляем текст, просто открываем меню
@@ -239,10 +239,10 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
                     await update.message.reply_text(f"✅ Дата обновлена:\n{name} — {new_date}", reply_markup=keyboard)
                     return
       
-            await update.message.reply_text("🚫 Машина не найдена.", callback_data="menu")
+            await update.message.reply_text("🚫 Машина не найдена.")
         except Exception as e:
             logger.error(f"Ошибка при обновлении: {e}")
-            await update.message.reply_text("❌ Ошибка обновления.", callback_data="menu")
+            await update.message.reply_text("❌ Ошибка обновления.")
         return
 
     action = context.user_data.get("action")
@@ -324,7 +324,7 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
 
         except Exception as e:
             logger.error(f"Ошибка записи: {e}")
-            await update.message.reply_text("⚠️ Ошибка записи в таблицу.", callback_data="menu")
+            await update.message.reply_text("⚠️ Ошибка записи в таблицу.")
 
 
 def main():
