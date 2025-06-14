@@ -350,23 +350,47 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
                 if detail_type == "income":
                     category = r[1] if len(r) > 1 else "-"
-                    amount = (r[2] if len(r) > 2 and r[2] else (r[3] if len(r) > 3 else "0")).replace(" ", "").replace(",", ".")
+                    card = r[2] if len(r) > 2 else ""
+                    cash = r[3] if len(r) > 3 else ""
                     desc = r[4] if len(r) > 4 else "-"
             
-                    # Определяем иконку категории
-                    if category.strip().lower() == "другое":
-                        category_icon = "🛠️"
+                    # Определяем сумму и источник
+                    if card:
+                        amount = card
+                        source_emoji = "💳"
+                    elif cash:
+                        amount = cash
+                        source_emoji = "💵"
                     else:
-                        category_icon = "🚗"
+                        amount = "0"
+                        source_emoji = ""
             
-                    lines.append(f"📅 {date} | {category_icon} {category} | 🟢 {amount} | 📝 {desc}")
+                    amount = amount.replace(" ", "").replace(",", ".")
+            
+                    # Иконка категории
+                    category_icon = "🛠️" if category.strip().lower() == "другое" else "🚗"
+            
+                    lines.append(f"📅 {date} | {category_icon} {category} | 🟢 {source_emoji} {amount} | 📝 {desc}")
             
                 else:
-                    amount = (r[1] if len(r) > 1 and r[1] else (r[2] if len(r) > 2 else "0")).replace(" ", "").replace(",", ".")
+                    card = r[1] if len(r) > 1 else ""
+                    cash = r[2] if len(r) > 2 else ""
                     desc = r[3] if len(r) > 3 else "-"
-                    
-                    # Здесь можно также добавить иконку к описанию (если хочешь):
-                    lines.append(f"📅 {date} | 🔴 -{amount} | 📝 {desc}")
+            
+                    # Определяем сумму и источник
+                    if card:
+                        amount = card
+                        source_emoji = "💳"
+                    elif cash:
+                        amount = cash
+                        source_emoji = "💵"
+                    else:
+                        amount = "0"
+                        source_emoji = ""
+            
+                    amount = amount.replace(" ", "").replace(",", ".")
+            
+                    lines.append(f"📅 {date} | 🔴 -{source_emoji} {amount} | 📝 {desc}")
             
             text = f"📋 Подробности ({'Доходов' if detail_type == 'income' else 'Расходов'}) за {days} дней:\n\n"
             text += "\n".join(lines) if lines else "Данные не найдены."
