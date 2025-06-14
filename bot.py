@@ -5,6 +5,7 @@ import logging
 import gspread
 import datetime
 import re
+import asyncio
 
 from oauth2client.service_account import ServiceAccountCredentials
 from telegram import (
@@ -26,6 +27,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 Telegram_Token = os.getenv("Telegram_Token")
+REMINDER_CHAT_ID = -1002522776417
 GOOGLE_CREDENTIALS_B64 = os.getenv("GOOGLE_CREDENTIALS_B64")
 SPREADSHEET_ID = "1qjVJZUqm1hT5IkrASq-_iL9cc4wDl8fdjvd7KDMWL-U"
 
@@ -382,6 +384,63 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
             logger.error(f"Ошибка записи: {e}")
             await update.message.reply_text("⚠️ Ошибка записи в таблицу.")
 
+async def check_reminders(app):
+    while True:
+        try:
+            client = get_gspread_client()
+            now = datetime.datetime.now().date()
+            remind_before_days = 7
+
+            def check_sheet(sheet_name):
+                sheet = client.open_by_key(SPREADSHEET_ID).worksheet(sheet_name)
+                rows = sheet.get_all_values()[1:]  # пропускаем заголовок
+                reminders = []
+                for row in rows:
+                    if len(row) < 2:
+                        continue
+                    car = row[0].strip()
+                    date_str = row[1].strip()
+                    try:
+                        try:
+                            dt = datetime.datetime.strptime(date_str, "%d.%m.%Y %H:%M").date()
+                        except ValueError:
+                            dt = datetime.datetime.strptime(date_str, "%d.%m.%Y").date()
+                    except Exception:
+                        continue
+
+                    days_left = (dt - now).days
+                    if days_left <= remind_before_days:
+                        reminders.append((car, dt, days_left))
+                return reminders
+
+            insurance_reminders = check_sheet("Страховки")
+            tech_reminders = check_sheet("ТехОсмотры")
+
+            for car, dt, days_left in insurance_reminders:
+                if days_left < 0:
+                    text = f"🚨 Страховка на *{car}* просрочена! Срочно оплатите и обновите дату."
+                else:
+                    text = f"⏰ Через {days_left} дней заканчивается страховка на *{car}* ({dt.strftime('%d.%m.%Y')})."
+
+                await app.bot.send_message(chat_id=REMINDER_CHAT_ID, text=text, parse_mode="Markdown")
+
+            for car, dt, days_left in tech_reminders:
+                if days_left < 0:
+                    text = f"🚨 Тех.осмотр на *{car}* просрочен! Срочно пройдите тех.осмотр и обновите дату."
+                else:
+                    text = f"⏰ Через {days_left} дней заканчивается тех.осмотр на *{car}* ({dt.strftime('%d.%m.%Y')})."
+
+                await app.bot.send_message(chat_id=REMINDER_CHAT_ID, text=text, parse_mode="Markdown")
+
+        except Exception as e:
+            logger.error(f"Ошибка при проверке напоминаний: {e}")
+
+        await asyncio.sleep(86400)  # Ждем 24 часа
+
+
+async def on_startup(app):
+    asyncio.create_task(check_reminders(app))
+
 
 def main():
     application = ApplicationBuilder().token(Telegram_Token).build()
@@ -390,8 +449,9 @@ def main():
     application.add_handler(MessageHandler(filters.Regex("^(Меню)$"), on_menu_button_pressed))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_amount_description))
 
-    application.run_polling()
+    application.post_init = on_startup
 
+    application.run_polling()
 
 if __name__ == "__main__":
     main()
