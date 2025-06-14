@@ -153,7 +153,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(text, reply_markup=keyboard)
         except Exception as e:
             logger.error(f"Ошибка страховок: {e}")
-            await query.message.reply_text("⚠️ Не удалось получить данные по страховкам.", reply_markup=persistent_menu_keyboard())
+            await query.message.reply_text("⚠️ Не удалось получить данные по страховкам.",  callback_data="menu"())
 
     elif data == "tech":
         try:
@@ -175,7 +175,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(text, reply_markup=keyboard)
         except Exception as e:
             logger.error(f"Ошибка тех.осмотров: {e}")
-            await query.message.reply_text("⚠️ Не удалось получить данные по тех.осмотрам.", reply_markup=persistent_menu_keyboard())
+            await query.message.reply_text("⚠️ Не удалось получить данные по тех.осмотрам.",  callback_data="menu"())
 
     elif data == "edit_insurance":
         context.user_data["edit_type"] = "insurance"
@@ -201,7 +201,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(text, reply_markup=keyboard)
         except Exception as e:
             logger.error(f"Ошибка баланса: {e}")
-            await query.message.reply_text("⚠️ Не удалось получить баланс.", reply_markup=persistent_menu_keyboard())
+            await query.message.reply_text("⚠️ Не удалось получить баланс.",  callback_data="menu"())
 
 
 # Обработчик нажатия на кнопку "Меню" с клавиатуры — не отправляем текст, просто открываем меню
@@ -222,7 +222,7 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
         try:
             name, new_date = map(str.strip, text.split("-", 1))
             if not re.match(r"^\d{2}\.\d{2}\.\d{4}$", new_date):
-                await update.message.reply_text("❌ Некорректный формат даты. Используйте дд.мм.гггг", reply_markup=persistent_menu_keyboard())
+                await update.message.reply_text("❌ Некорректный формат даты. Используйте дд.мм.гггг",  callback_data="edit_type"())
                 return
             sheet_name = "Страховки" if edit_type == "insurance" else "ТехОсмотры"
             sheet = get_gspread_client().open_by_key(SPREADSHEET_ID).worksheet(sheet_name)
