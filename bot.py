@@ -76,6 +76,12 @@ def _fmt_amount(val):
 
 
 def compute_balance(client):
+    """
+    Calculate balances directly from sheets:
+    - "Доход": card=C, cash=D
+    - "Расход": card=B, cash=C
+    Returns dict with Decimal values: {"Баланс": x, "Карта": y, "Наличные": z}
+    """
     income_ws = client.open_by_key(SPREADSHEET_ID).worksheet("Доход")
     expense_ws = client.open_by_key(SPREADSHEET_ID).worksheet("Расход")
 
@@ -98,15 +104,66 @@ def compute_balance(client):
         if len(r) > 2:
             expense_cash += _to_amount(r[2])
 
-    # Формулы как в листе 'Сводка'
-    cash_bal_display = income_cash - expense_cash                # = SUM(Доход!D) - SUM(Расход!C)
-    card_bal_display = INITIAL_BALANCE + income_card - expense_card  # = INITIAL + SUM(Доход!C) - SUM(Расход!B)
-    total_bal = card_bal_display + cash_bal_display               # = Карта + Наличные
+    card_bal = income_card - expense_card
+cash_bal = income_cash - expense_cash
+
+# Формулы как в листе 'Сводка'
+cash_bal_display = cash_bal  # = SUM(Доход!D) - SUM(Расход!C)
+card_bal_display = INITIAL_BALANCE + card_bal  # = INITIAL + SUM(Доход!C) - SUM(Расход!B)
+total_bal = INITIAL_BALANCE + (income_card + income_cash) - (expense_card + expense_cash)
+
+return {"Баланс": total_bal, "Карта": card_bal_display, "Наличные": cash_bal_display}
+
+
+def compute_summary(client):
+    """
+    Возвращает полный набор показателей как на листе 'Сводка':
+    - Начальная сумма (INITIAL_BALANCE)
+    - Доход = SUM(Доход!C:D)
+    - Расход = SUM(Расход!B:C)
+    - Наличные = SUM(Доход!D) - SUM(Расход!C)
+    - Карта = INITIAL_BALANCE + SUM(Доход!C) - SUM(Расход!B)
+    - Баланс = Карта + Наличные
+    - Заработано = Доход - Начальная сумма
+    """
+    income_ws = client.open_by_key(SPREADSHEET_ID).worksheet("Доход")
+    expense_ws = client.open_by_key(SPREADSHEET_ID).worksheet("Расход")
+
+    income_rows = income_ws.get_all_values()[1:]
+    expense_rows = expense_ws.get_all_values()[1:]
+
+    income_card = Decimal("0")
+    income_cash = Decimal("0")
+    for r in income_rows:
+        if len(r) > 2:
+            income_card += _to_amount(r[2])
+        if len(r) > 3:
+            income_cash += _to_amount(r[3])
+
+    expense_card = Decimal("0")
+    expense_cash = Decimal("0")
+    for r in expense_rows:
+        if len(r) > 1:
+            expense_card += _to_amount(r[1])
+        if len(r) > 2:
+            expense_cash += _to_amount(r[2])
+
+    income_total = income_card + income_cash
+    expense_total = expense_card + expense_cash
+
+    cash = income_cash - expense_cash
+    card = INITIAL_BALANCE + income_card - expense_card
+    balance = card + cash
+    earned = income_total - INITIAL_BALANCE
 
     return {
-        "Баланс": total_bal,
-        "Карта": card_bal_display,
-        "Наличные": cash_bal_display
+        "Начальная": INITIAL_BALANCE,
+        "Доход": income_total,
+        "Расход": expense_total,
+        "Наличные": cash,
+        "Карта": card,
+        "Баланс": balance,
+        "Заработано": earned,
     }
 # Статичная клавиатура с кнопкой "Меню" под полем ввода
 def persistent_menu_keyboard():
@@ -306,11 +363,23 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "balance":
         try:
             client = get_gspread_client()
-            summary = compute_balance(client)
+            s = compute_summary(client)
             text = (
-                f"💼 Баланс: {_fmt_amount(summary['Баланс'])}\n"
-                f"💳 Карта: {_fmt_amount(summary['Карта'])}\n"
-                f"💵 Наличные: {_fmt_amount(summary['Наличные'])}"
+                f"🏁 Начальная сумма: {_fmt_amount(s['Начальная'])}
+"
+                f"💼 Заработано: {_fmt_amount(s['Заработано'])}
+"
+                f"💰 Доход: {_fmt_amount(s['Доход'])}
+"
+                f"💸 Расход: {_fmt_amount(s['Расход'])}
+"
+                f"
+"
+                f"Баланс: {_fmt_amount(s['Баланс'])}
+"
+                f"Карта: {_fmt_amount(s['Карта'])}
+"
+                f"Наличные: {_fmt_amount(s['Наличные'])}"
             )
             keyboard = InlineKeyboardMarkup(
                 [
@@ -584,7 +653,7 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
                     row[2] = str(amount.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))  # C
                 else:
                     row[3] = str(amount.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))  # D
-                sheet.append_row(row, value_input_option="USER_ENTERED")
+                sheet.append_row(row, value_input_option="USER_ENTERED", table_range="A:D")
                 text_msg = (
                     f"✅ Добавлено в *Доход*:\n"
                     f"📅 {now}\n"
@@ -599,7 +668,7 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
                     row[1] = str(amount.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))  # B
                 else:
                     row[2] = str(amount.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))  # C
-                sheet.append_row(row, value_input_option="USER_ENTERED")
+                sheet.append_row(row, value_input_option="USER_ENTERED", table_range="A:E")
                 text_msg = (
                     f"✅ Добавлено в *Расход*:\n"
                     f"📅 {now}\n"
