@@ -724,87 +724,80 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
                     chat_id=REMINDER_CHAT_ID, text=text_msg, parse_mode="Markdown"
                 )
             
-        if action == "transfer":
-            description = text or "Перевод между счётами"
-            now = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
-            amount = context.user_data.get("amount")
-            direction = context.user_data.get("direction")
-
-            try:
-                client = get_gspread_client()
-                income_ws = client.open_by_key(SPREADSHEET_ID).worksheet("Доход")
-                expense_ws = client.open_by_key(SPREADSHEET_ID).worksheet("Расход")
-
-                # Prepare rows
-                # Доход: [date, category, card(C), cash(D), desc]
-                income_row = [now, "Перевод", "", "", description]
-                # Расход: [date, card(B), cash(C), desc]
-                expense_row = [now, "", "", description]
-
-                if direction == "card_to_cash":
-                    # Расход по карте (B), Доход в наличные (D)
-                    expense_row[1] = str(amount.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))  # B
-                    income_row[3] = str(amount.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))   # D
-                    direction_text = "💳 → 💵 С карты в наличные"
-                else:
-                    # Расход по наличным (C), Доход на карту (C)
-                    expense_row[2] = str(amount.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))  # C
-                    income_row[2] = str(amount.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))   # C
-                    direction_text = "💵 → 💳 С наличных на карту"
-
-                # Append
-                expense_ws.append_row(expense_row, value_input_option="USER_ENTERED", table_range="A:D")
-                income_ws.append_row(income_row, value_input_option="USER_ENTERED", table_range="A:E")
-
-                # Compose confirmation
-                text_msg = (
-                    f"✅ Перевод выполнен:\n"
-                    f"{direction_text}\n"
-                    f"📅 {now}\n"
-                    f"💱 Сумма: {amount}\n"
-                    f"📝 {description}"
-                )
-
-                # Live balance
-                live = compute_balance(client)
-                text_msg += (
-                    f"\n\n📊 Баланс:\n"
-                    f"💼 {_fmt_amount(live['Баланс'])}\n"
-                    f"💳 {_fmt_amount(live['Карта'])}\n"
-                    f"💵 {_fmt_amount(live['Наличные'])}"
-                )
-
-                keyboard = InlineKeyboardMarkup(
+    if action == "transfer":
+        description = text or "Перевод между счётами"
+        now = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
+        amount = context.user_data.get("amount")
+        direction = context.user_data.get("direction")
+    
+        try:
+            client = get_gspread_client()
+            income_ws = client.open_by_key(SPREADSHEET_ID).worksheet("Доход")
+            expense_ws = client.open_by_key(SPREADSHEET_ID).worksheet("Расход")
+    
+            # Prepare rows
+            # Доход: [date, category, card(C), cash(D), desc]
+            income_row = [now, "Перевод", "", "", description]
+            # Расход: [date, card(B), cash(C), desc]
+            expense_row = [now, "", "", description]
+    
+            if direction == "card_to_cash":
+                # Расход по карте (B), Доход в наличные (D)
+                expense_row[1] = str(amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))  # B
+                income_row[3] = str(amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))   # D
+                direction_text = "💳 → 💵 С карты в наличные"
+            else:
+                # Расход по наличным (C), Доход на карту (C)
+                expense_row[2] = str(amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))  # C
+                income_row[2] = str(amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))   # C
+                direction_text = "💵 → 💳 С наличных на карту"
+    
+            # Append to sheets
+            expense_ws.append_row(expense_row, value_input_option="USER_ENTERED", table_range="A:D")
+            income_ws.append_row(income_row, value_input_option="USER_ENTERED", table_range="A:E")
+    
+            # Compose confirmation message
+            text_msg = (
+                f"✅ Перевод выполнен:\n"
+                f"{direction_text}\n"
+                f"📅 {now}\n"
+                f"💱 Сумма: {amount}\n"
+                f"📝 {description}"
+            )
+    
+            # Compute live balance
+            live = compute_balance(client)
+            text_msg += (
+                f"\n\n📊 Баланс:\n"
+                f"💼 {_fmt_amount(live['Баланс'])}\n"
+                f"💳 {_fmt_amount(live['Карта'])}\n"
+                f"💵 {_fmt_amount(live['Наличные'])}"
+            )
+    
+            keyboard = InlineKeyboardMarkup(
+                [
                     [
-                        [
-                            InlineKeyboardButton("📥 Доход", callback_data="add_income"),
-                            InlineKeyboardButton("📤 Расход", callback_data="add_expense"),
-                        ],
-                        [InlineKeyboardButton("⬅️ Назад", callback_data="menu")],
-                    ]
-                )
-
-                context.user_data.clear()
-                await update.message.reply_text(text_msg, reply_markup=keyboard, parse_mode="Markdown")
-
-                # Duplicate to group
-                try:
-                    await context.bot.send_message(chat_id=REMINDER_CHAT_ID, text=text_msg, parse_mode="Markdown")
-                except Exception as e:
-                    logger.error(f"Ошибка отправки в группу: {e}")
-
+                        InlineKeyboardButton("📥 Доход", callback_data="add_income"),
+                        InlineKeyboardButton("📤 Расход", callback_data="add_expense"),
+                    ],
+                    [InlineKeyboardButton("⬅️ Назад", callback_data="menu")],
+                ]
+            )
+    
+            context.user_data.clear()
+            await update.message.reply_text(text_msg, reply_markup=keyboard, parse_mode="Markdown")
+    
+            # Duplicate to group
+            try:
+                await context.bot.send_message(chat_id=REMINDER_CHAT_ID, text=text_msg, parse_mode="Markdown")
             except Exception as e:
-                logger.error(f"Ошибка перевода: {e}")
-                await update.message.reply_text("⚠️ Не удалось выполнить перевод.")
-            return
-        except Exception as e:
                 logger.error(f"Ошибка отправки в группу: {e}")
-
+    
         except Exception as e:
-            logger.error(f"Ошибка записи: {e}")
-            await update.message.reply_text("⚠️ Ошибка записи в таблицу.")
-
-
+            logger.error(f"Ошибка перевода: {e}")
+            await update.message.reply_text("⚠️ Не удалось выполнить перевод.")
+        return
+            
 async def check_reminders(app):
     while True:
         try:
