@@ -96,13 +96,40 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     data = query.data
 
-    # ------------------- ОТМЕНА / НАЗАД -------------------
     if data in ["cancel", "menu"]:
         context.user_data.clear()
         await menu_command(update, context)
         return
 
-    # ------------------- ДОХОД -------------------
+    client = get_gspread_client()
+    sheet_summary = client.open_by_key(SPREADSHEET_ID).worksheet("Сводка")
+
+    # Функция для получения актуальных значений карты и налички
+    def get_current_balance():
+        rows = sheet_summary.get_all_values()
+        data = {row[0].strip(): row[1].strip() for row in rows if len(row) >= 2}
+        try:
+            card = float(data.get("Карта", "0").replace(",", "."))
+        except ValueError:
+            card = 0.0
+        try:
+            cash = float(data.get("Наличные", "0").replace(",", "."))
+        except ValueError:
+            cash = 0.0
+        return card, cash
+
+    # Функция для обновления сводки
+    def update_summary(card, cash):
+        rows = sheet_summary.get_all_values()
+        for i, row in enumerate(rows):
+            if row[0].strip().lower() == "карта":
+                sheet_summary.update_cell(i + 1, 2, str(card))
+            elif row[0].strip().lower() == "наличные":
+                sheet_summary.update_cell(i + 1, 2, str(cash))
+            elif row[0].strip().lower() == "баланс":
+                sheet_summary.update_cell(i + 1, 2, str(card + cash))
+
+    # Добавление дохода
     if data == "add_income":
         context.user_data.clear()
         context.user_data["action"] = "income_category"
@@ -113,53 +140,51 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("❌ Отмена", callback_data="cancel")]
         ])
         await query.edit_message_text("Выберите категорию дохода:", reply_markup=keyboard)
-        return
 
     elif data in ["cat_franky", "cat_fraiz", "cat_other"]:
-        category_map = {
-            "cat_franky": "Franky",
-            "cat_fraiz": "Fraiz",
-            "cat_other": "Другое"
-        }
+        category_map = {"cat_franky": "Franky", "cat_fraiz": "Fraiz", "cat_other": "Другое"}
         context.user_data["action"] = "income"
         context.user_data["category"] = category_map[data]
         context.user_data["step"] = "amount"
         await query.edit_message_text("Введите сумму дохода:", reply_markup=cancel_keyboard())
-        return
 
-    # ------------------- РАСХОД -------------------
+    # Добавление расхода
     elif data == "add_expense":
         context.user_data.clear()
         context.user_data["action"] = "expense"
         context.user_data["step"] = "amount"
         await query.edit_message_text("Введите сумму расхода:", reply_markup=cancel_keyboard())
-        return
 
-    # ------------------- ИСТОЧНИК -------------------
+    # Выбор источника
     elif data in ["source_card", "source_cash"]:
         context.user_data["source"] = "Карта" if data == "source_card" else "Наличные"
         context.user_data["step"] = "description"
         await query.edit_message_text("Введите описание:")
-        return
 
-    # ------------------- ПЕРЕВОД -------------------
+    # Перевод между картой и наличкой
     elif data == "transfer":
         context.user_data.clear()
         context.user_data["action"] = "transfer"
-        context.user_data["step"] = "direction"
+        context.user_data["step"] = "amount"
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("💳 → 💵 С карты на наличку", callback_data="transfer_card_to_cash")],
             [InlineKeyboardButton("💵 → 💳 С налички на карту", callback_data="transfer_cash_to_card")],
             [InlineKeyboardButton("❌ Отмена", callback_data="cancel")]
         ])
         await query.edit_message_text("Выберите направление перевода:", reply_markup=keyboard)
-        return
 
     elif data in ["transfer_card_to_cash", "transfer_cash_to_card"]:
         context.user_data["direction"] = "card_to_cash" if data == "transfer_card_to_cash" else "cash_to_card"
+        context.user_data["action"] = "transfer"
         context.user_data["step"] = "amount"
-        await query.edit_message_text("Введите сумму перевода:", reply_markup=cancel_keyboard())
-        return
+        await query.edit_message_text("Введите сумму перевода:", reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("❌ Отмена", callback_data="cancel")]]
+        ))
+
+    # Обновление баланса после любой операции
+    if "action" in context.user_data and context.user_data["action"] in ["income", "expense", "transfer"] and context.user_data.get("step") == "completed":
+        card, cash = get_current_balance()
+        update_summary(card, cash)
 
     # ------------------- СТРАХОВКИ -------------------
     elif data == "insurance":
