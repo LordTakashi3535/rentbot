@@ -215,8 +215,8 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Ошибка тех.осмотров: {e}")
             await query.message.reply_text("⚠️ Не удалось получить данные по тех.осмотрам.")
 			
-	elif data == "transfer":
-        context.user_data.clear()
+    elif data == "transfer":
+		context.user_data.clear()
         context.user_data["action"] = "transfer_direction"
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("💳 → 💵", callback_data="transfer_card_to_cash")],
