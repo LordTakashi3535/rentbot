@@ -105,10 +105,14 @@ def compute_balance(client):
             expense_cash += _to_amount(r[2])
 
     card_bal = income_card - expense_card
-    cash_bal = income_cash - expense_cash
-    total_bal = card_bal + cash_bal + INITIAL_BALANCE
+cash_bal = income_cash - expense_cash
 
-    return {"Баланс": total_bal, "Карта": card_bal, "Наличные": cash_bal}
+# Формулы как в листе 'Сводка'
+cash_bal_display = cash_bal  # = SUM(Доход!D) - SUM(Расход!C)
+card_bal_display = INITIAL_BALANCE + card_bal  # = INITIAL + SUM(Доход!C) - SUM(Расход!B)
+total_bal = INITIAL_BALANCE + (income_card + income_cash) - (expense_card + expense_cash)
+
+return {"Баланс": total_bal, "Карта": card_bal_display, "Наличные": cash_bal_display}
 # Статичная клавиатура с кнопкой "Меню" под полем ввода
 def persistent_menu_keyboard():
     return ReplyKeyboardMarkup(
