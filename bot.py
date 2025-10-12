@@ -72,6 +72,41 @@ def _fmt_amount(val):
     # format with thousands sep and 2 decimals
     return format(val.quantize(Decimal("0.01")), ",.2f")
 
+
+def compute_balance(client):
+    """
+    Calculate balances directly from sheets:
+    - "Доход": card=C, cash=D
+    - "Расход": card=B, cash=C
+    Returns dict with Decimal values: {"Баланс": x, "Карта": y, "Наличные": z}
+    """
+    income_ws = client.open_by_key(SPREADSHEET_ID).worksheet("Доход")
+    expense_ws = client.open_by_key(SPREADSHEET_ID).worksheet("Расход")
+
+    income_rows = income_ws.get_all_values()[1:]
+    expense_rows = expense_ws.get_all_values()[1:]
+
+    income_card = Decimal("0")
+    income_cash = Decimal("0")
+    for r in income_rows:
+        if len(r) > 2:
+            income_card += _to_amount(r[2])
+        if len(r) > 3:
+            income_cash += _to_amount(r[3])
+
+    expense_card = Decimal("0")
+    expense_cash = Decimal("0")
+    for r in expense_rows:
+        if len(r) > 1:
+            expense_card += _to_amount(r[1])
+        if len(r) > 2:
+            expense_cash += _to_amount(r[2])
+
+    card_bal = income_card - expense_card
+    cash_bal = income_cash - expense_cash
+    total_bal = card_bal + cash_bal
+
+    return {"Баланс": total_bal, "Карта": card_bal, "Наличные": cash_bal}
 # Статичная клавиатура с кнопкой "Меню" под полем ввода
 def persistent_menu_keyboard():
     return ReplyKeyboardMarkup(
@@ -269,11 +304,14 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "balance":
         try:
-            data_map = get_data()
+            client = get_gspread_client()
+            summary = compute_balance(client)
             text = (
-                f"💼 Баланс: {_fmt_amount(data_map.get('Баланс', 0))}\n"
-                f"💳 Карта: {_fmt_amount(data_map.get('Карта', 0))}\n"
-                f"💵 Наличные: {_fmt_amount(data_map.get('Наличные', 0))}"
+                f"💼 Баланс: {_fmt_amount(summary['Баланс'])}
+"
+                f"💳 Карта: {_fmt_amount(summary['Карта'])}
+"
+                f"💵 Наличные: {_fmt_amount(summary['Наличные'])}"
             )
             keyboard = InlineKeyboardMarkup(
                 [
