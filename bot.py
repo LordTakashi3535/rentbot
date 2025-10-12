@@ -184,12 +184,12 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 InlineKeyboardButton("📤 Расход", callback_data="add_expense"),
             ],
             [
-                InlineKeyboardButton("🛡 Страховки", callback_data="insurance"),
-                InlineKeyboardButton("🧰 Тех.Осмотры", callback_data="tech"),
-            ],
-            [
                 InlineKeyboardButton("🔁 Перевод", callback_data="transfer"),
                 InlineKeyboardButton("📄 Договора", callback_data="contracts"),
+            ],
+            [
+                InlineKeyboardButton("🛡 Страховки", callback_data="insurance"),
+                InlineKeyboardButton("🧰 Тех.Осмотры", callback_data="tech"),
             ],
             [
                 InlineKeyboardButton("📈 Отчёт 7 дней", callback_data="report_7"),
