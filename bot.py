@@ -269,7 +269,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("❌ Отмена", callback_data="cancel")],
         ])
         await query.edit_message_text("Выберите направление перевода:", reply_markup=kb)
-
+        
     elif data in ["transfer_card_to_cash", "transfer_cash_to_card"]:
         context.user_data.clear()
         context.user_data["action"] = "transfer"
