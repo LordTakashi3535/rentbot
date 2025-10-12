@@ -797,7 +797,7 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
                 logger.error(f"Ошибка перевода: {e}")
                 await update.message.reply_text("⚠️ Не удалось выполнить перевод.")
             return
-except Exception as e:
+        except Exception as e:
                 logger.error(f"Ошибка отправки в группу: {e}")
 
         except Exception as e:
