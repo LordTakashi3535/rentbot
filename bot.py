@@ -34,6 +34,8 @@ REMINDER_CHAT_ID = -1002522776417
 GOOGLE_CREDENTIALS_B64 = os.getenv("GOOGLE_CREDENTIALS_B64")
 SPREADSHEET_ID = "1qjVJZUqm1hT5IkrASq-_iL9cc4wDl8fdjvd7KDMWL-U"
 
+INITIAL_BALANCE = Decimal("21263.99")  # 🏁 Начальная сумма
+
 
 def get_gspread_client():
     creds_json = base64.b64decode(GOOGLE_CREDENTIALS_B64).decode("utf-8")
@@ -104,7 +106,7 @@ def compute_balance(client):
 
     card_bal = income_card - expense_card
     cash_bal = income_cash - expense_cash
-    total_bal = card_bal + cash_bal
+    total_bal = card_bal + cash_bal + INITIAL_BALANCE
 
     return {"Баланс": total_bal, "Карта": card_bal, "Наличные": cash_bal}
 # Статичная клавиатура с кнопкой "Меню" под полем ввода
@@ -606,12 +608,13 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
                     f"📝 {description}"
                 )
 
-            summary = get_data()
+            client2 = get_gspread_client()
+            live = compute_balance(client2)
             text_msg += (
                 f"\n\n📊 Баланс:\n"
-                f"💼 {summary.get('Баланс', '—')}\n"
-                f"💳 {summary.get('Карта', '—')}\n"
-                f"💵 {summary.get('Наличные', '—')}"
+                f"💼 {_fmt_amount(live['Баланс'])}\n"
+                f"💳 {_fmt_amount(live['Карта'])}\n"
+                f"💵 {_fmt_amount(live['Наличные'])}"
             )
 
             keyboard = InlineKeyboardMarkup(
