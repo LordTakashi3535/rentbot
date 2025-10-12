@@ -478,15 +478,15 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
 
     if not action or not step:
         return
-		
+		        
     if action == "transfer" and step == "amount":
         try:
-            amount = float(text.replace(",", "."))
+            amount = float(text.strip().replace(",", "."))
             if amount <= 0:
                 raise ValueError("Сумма должна быть положительной")
 
             direction = context.user_data["direction"]
-
+			
             client = get_gspread_client()
             sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Сводка")
             rows = sheet.get_all_values()
