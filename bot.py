@@ -486,7 +486,6 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
         return
 
     if action == "transfer" and step == "amount":
-	    # Убираем все пробелы и заменяем запятую на точку
 	    clean_text = text.replace(" ", "").replace(",", ".")
 	    try:
 	        amount = float(clean_text)
@@ -539,7 +538,7 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
 	                sheet.update_cell(i + 1, 2, str(card + cash))
 	
 	        now = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
-	        text = (
+	        text_msg = (
 	            f"💱 *Перевод средств*\n"
 	            f"📅 {now}\n"
 	            f"{direction_text}\n"
@@ -551,24 +550,26 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
 	        )
 	
 	        context.user_data.clear()
-	        await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(
-	            [[InlineKeyboardButton("⬅️ Назад", callback_data="menu")]]
-	        ), parse_mode="Markdown")
+	        await update.message.reply_text(
+	            text_msg,
+	            reply_markup=InlineKeyboardMarkup(
+	                [[InlineKeyboardButton("⬅️ Назад", callback_data="menu")]]
+	            ),
+	            parse_mode="Markdown"
+	        )
 	
 	        # Отправляем сообщение в канал
 	        try:
-	            await context.bot.send_message(chat_id=REMINDER_CHAT_ID, text=text, parse_mode="Markdown")
+	            await context.bot.send_message(chat_id=REMINDER_CHAT_ID, text=text_msg, parse_mode="Markdown")
 	        except Exception as e:
 	            logger.error(f"Ошибка отправки в канал: {e}")
 	
 	    except ValueError:
 	        await update.message.reply_text("⚠️ Введите положительное число (пример: 500.00)")
-
-        except Exception as e:
-            logger.error(f"Ошибка перевода: {e}")
-            await update.message.reply_text("❌ Ошибка при переводе средств.")
-        return
-
+	    except Exception as e:
+	        logger.error(f"Ошибка перевода: {e}")
+	        await update.message.reply_text("❌ Ошибка при переводе средств.")
+		
     # --------------------
     # ДОХОД / РАСХОД
     # --------------------
