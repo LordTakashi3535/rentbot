@@ -308,6 +308,8 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             summary = compute_balance(client)
             text = (
                 f"💼 Баланс: {_fmt_amount(summary['Баланс'])}
+"f"💳 Карта: {_fmt_amount(summary['Карта'])}
+"f"💵 Наличные: {_fmt_amount(summary['Наличные'])}"
 "
                 f"💳 Карта: {_fmt_amount(summary['Карта'])}
 "
