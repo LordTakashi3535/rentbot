@@ -69,6 +69,7 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("📊 Баланс", callback_data="balance")],
         [InlineKeyboardButton("📥 Доход", callback_data="add_income"),
          InlineKeyboardButton("📤 Расход", callback_data="add_expense")],
+        [InlineKeyboardButton("💱 Перевод", callback_data="transfer")],  # 👈 добавлено
         [InlineKeyboardButton("🛡 Страховки", callback_data="insurance"),
          InlineKeyboardButton("🧰 Тех.Осмотры", callback_data="tech")],
         [InlineKeyboardButton("📈 Отчёт 7 дней", callback_data="report_7"),
@@ -213,6 +214,22 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Ошибка тех.осмотров: {e}")
             await query.message.reply_text("⚠️ Не удалось получить данные по тех.осмотрам.")
+			
+	elif data == "transfer":
+        context.user_data.clear()
+        context.user_data["action"] = "transfer_direction"
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("💳 → 💵", callback_data="transfer_card_to_cash")],
+            [InlineKeyboardButton("💵 → 💳", callback_data="transfer_cash_to_card")],
+            [InlineKeyboardButton("❌ Отмена", callback_data="cancel")]
+        ])
+        await query.edit_message_text("Выберите направление перевода:", reply_markup=keyboard)
+
+    elif data in ["transfer_card_to_cash", "transfer_cash_to_card"]:
+        context.user_data["action"] = "transfer"
+        context.user_data["direction"] = "card_to_cash" if data == "transfer_card_to_cash" else "cash_to_card"
+        context.user_data["step"] = "amount"
+        await query.edit_message_text("Введите сумму перевода:", reply_markup=cancel_keyboard())		
 
     elif data == "edit_insurance":
         context.user_data["edit_type"] = "insurance"
@@ -460,6 +477,83 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
     step = context.user_data.get("step")
 
     if not action or not step:
+        return
+		
+    if action == "transfer" and step == "amount":
+        try:
+            amount = float(text.replace(",", "."))
+            if amount <= 0:
+                raise ValueError("Сумма должна быть положительной")
+
+            direction = context.user_data["direction"]
+
+            client = get_gspread_client()
+            sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Сводка")
+            rows = sheet.get_all_values()
+
+            data = {row[0].strip(): row[1].strip() for row in rows if len(row) >= 2}
+            card = float(data.get("Карта", 0))
+            cash = float(data.get("Наличные", 0))
+
+            if direction == "card_to_cash":
+                if card < amount:
+                    await update.message.reply_text("⚠️ Недостаточно средств на карте.")
+                    return
+                card -= amount
+                cash += amount
+                direction_text = "💳 → 💵 (с карты на наличку)"
+            else:
+                if cash < amount:
+                    await update.message.reply_text("⚠️ Недостаточно наличных.")
+                    return
+                cash -= amount
+                card += amount
+                direction_text = "💵 → 💳 (с налички на карту)"
+
+            # Обновляем в таблице
+            for i, row in enumerate(rows):
+                if row[0].strip() == "Карта":
+                    sheet.update_cell(i + 1, 2, str(card))
+                elif row[0].strip() == "Наличные":
+                    sheet.update_cell(i + 1, 2, str(cash))
+                elif row[0].strip() == "Баланс":
+                    sheet.update_cell(i + 1, 2, str(card + cash))
+
+            now = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
+
+            text = (
+                f"💱 *Перевод средств*\n"
+                f"📅 {now}\n"
+                f"{direction_text}\n"
+                f"💰 Сумма: {amount:,.2f}\n\n"
+                f"📊 *Баланс обновлён:*\n"
+                f"💳 Карта: {card:,.2f}\n"
+                f"💵 Наличные: {cash:,.2f}\n"
+                f"💼 Общий: {card + cash:,.2f}"
+            )
+
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ Назад", callback_data="menu")]
+            ])
+
+            context.user_data.clear()
+            await update.message.reply_text(text, reply_markup=keyboard, parse_mode="Markdown")
+
+            # 🔔 Отправляем сообщение в Telegram-канал
+            try:
+                await context.bot.send_message(
+                    chat_id=REMINDER_CHAT_ID,
+                    text=text,
+                    parse_mode="Markdown"
+                )
+            except Exception as e:
+                logger.error(f"Ошибка отправки перевода в канал: {e}")
+
+        except ValueError:
+            await update.message.reply_text("⚠️ Введите положительное число (пример: 500.00)")
+        except Exception as e:
+            logger.error(f"Ошибка перевода: {e}")
+            await update.message.reply_text("❌ Ошибка при переводе средств.")
         return
 
     if step == "amount":
