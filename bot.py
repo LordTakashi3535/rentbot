@@ -303,27 +303,27 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif data == "balance":
-    try:
-        client = get_gspread_client()
-        summary = compute_balance(client)
-        text = (
-            f"💼 Баланс: {_fmt_amount(summary['Баланс'])}\n"
-            f"💳 Карта: {_fmt_amount(summary['Карта'])}\n"
-            f"💵 Наличные: {_fmt_amount(summary['Наличные'])}"
-        )
-        keyboard = InlineKeyboardMarkup(
-            [
+        try:
+            client = get_gspread_client()
+            summary = compute_balance(client)
+            text = (
+                f"💼 Баланс: {_fmt_amount(summary['Баланс'])}\n"
+                f"💳 Карта: {_fmt_amount(summary['Карта'])}\n"
+                f"💵 Наличные: {_fmt_amount(summary['Наличные'])}"
+            )
+            keyboard = InlineKeyboardMarkup(
                 [
-                    InlineKeyboardButton("📥 Доход", callback_data="add_income"),
-                    InlineKeyboardButton("📤 Расход", callback_data="add_expense"),
-                ],
-                [InlineKeyboardButton("⬅️ Назад", callback_data="menu")],
-            ]
-        )
-        await query.edit_message_text(text, reply_markup=keyboard)
-    except Exception as e:
-        logger.error(f"Ошибка баланса: {e}")
-        await query.message.reply_text("⚠️ Не удалось получить баланс.")
+                    [
+                        InlineKeyboardButton("📥 Доход", callback_data="add_income"),
+                        InlineKeyboardButton("📤 Расход", callback_data="add_expense"),
+                    ],
+                    [InlineKeyboardButton("⬅️ Назад", callback_data="menu")],
+                ]
+            )
+            await query.edit_message_text(text, reply_markup=keyboard)
+        except Exception as e:
+            logger.error(f"Ошибка баланса: {e}")
+            await query.message.reply_text("⚠️ Не удалось получить баланс.")
 
     # В handle_button добавим обработку новых callback_data
     elif data in ["report_7", "report_30"]:
