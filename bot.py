@@ -258,6 +258,9 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("Введите описание:")
 
     elif data == "source_cash":
+        context.user_data["source"] = "Наличные"
+        context.user_data["step"] = "description"
+        await query.edit_message_text("Введите описание:")
 
     elif data == "transfer":
         # Start transfer flow: ask direction
@@ -269,14 +272,14 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("❌ Отмена", callback_data="cancel")],
         ])
         await query.edit_message_text("Выберите направление перевода:", reply_markup=kb)
-        
+    
     elif data in ["transfer_card_to_cash", "transfer_cash_to_card"]:
         context.user_data.clear()
         context.user_data["action"] = "transfer"
         context.user_data["direction"] = "card_to_cash" if data == "transfer_card_to_cash" else "cash_to_card"
         context.user_data["step"] = "amount"
         await query.edit_message_text("Введите сумму перевода:", reply_markup=cancel_keyboard())
-
+    
     elif data == "contracts" or data == "договора":
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="menu")]])
         await query.edit_message_text("📄 Раздел «Договора»: в разработке.", reply_markup=kb)
