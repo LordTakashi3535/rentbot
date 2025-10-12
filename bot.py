@@ -7,6 +7,8 @@ import datetime
 import re
 import asyncio
 
+from decimal import Decimal, ROUND_HALF_UP
+
 from oauth2client.service_account import ServiceAccountCredentials
 
 from telegram import (
@@ -54,6 +56,21 @@ def get_data():
         logger.error(f"Ошибка получения данных: {e}")
         return {}
 
+
+def _to_amount(val):
+    s = str(val) if val is not None else "0"
+    s = s.replace(" ", "").replace(",", ".")
+    try:
+        return Decimal(s)
+    except Exception:
+        return Decimal("0")
+
+
+def _fmt_amount(val):
+    if not isinstance(val, Decimal):
+        val = _to_amount(val)
+    # format with thousands sep and 2 decimals
+    return format(val.quantize(Decimal("0.01")), ",.2f")
 
 # Статичная клавиатура с кнопкой "Меню" под полем ввода
 def persistent_menu_keyboard():
@@ -254,9 +271,9 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             data_map = get_data()
             text = (
-                f"💼 Баланс: {data_map.get('Баланс', '—')}\n"
-                f"💳 Карта: {data_map.get('Карта', '—')}\n"
-                f"💵 Наличные: {data_map.get('Наличные', '—')}"
+                f"💼 Баланс: {_fmt_amount(data_map.get('Баланс', 0))}\n"
+                f"💳 Карта: {_fmt_amount(data_map.get('Карта', 0))}\n"
+                f"💵 Наличные: {_fmt_amount(data_map.get('Наличные', 0))}"
             )
             keyboard = InlineKeyboardMarkup(
                 [
@@ -283,7 +300,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             def get_sum_and_details(sheet_name, is_income):
                 sheet = client.open_by_key(SPREADSHEET_ID).worksheet(sheet_name)
                 rows = sheet.get_all_values()[1:]
-                total = 0.0
+                total = Decimal('0.0')
                 for row in rows:
                     try:
                         date_str = row[0].strip()
@@ -300,7 +317,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 cash = row[2] if len(row) > 2 else ""
                             amount_str = card or cash or "0"
                             amount_str = amount_str.replace(" ", "").replace(",", ".")
-                            amount = float(amount_str) if amount_str else 0
+                            amount = _to_amount(amount_str)
                             total += amount
                     except Exception as e:
                         logger.warning(f"Ошибка строки: {row} — {e}")
@@ -313,9 +330,9 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             text = (
                 f"📅 Отчёт за {days} дней:\n\n"
-                f"📥 Доход: {income_total:,.2f}\n"
-                f"📤 Расход: {expense_total:,.2f}\n"
-                f"💰 Чистый доход: {net_income:,.2f}"
+                f"📥 Доход: {_fmt_amount(income_total)}\n"
+                f"📤 Расход: {_fmt_amount(expense_total)}\n"
+                f"💰 Чистый доход: {_fmt_amount(net_income)}"
             )
             keyboard = InlineKeyboardMarkup(
                 [
@@ -391,7 +408,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     else:
                         amount = "0"
                         source_emoji = ""
-                    amount = amount.replace(" ", "").replace(",", ".")
+                    amount = _fmt_amount(amount)
                     # Иконка категории
                     category_icon = "🛠️" if category.strip().lower() == "другое" else "🚗"
                     lines.append(
@@ -411,7 +428,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     else:
                         amount = "0"
                         source_emoji = ""
-                    amount = amount.replace(" ", "").replace(",", ".")
+                    amount = _fmt_amount(amount)
                     lines.append(f"📅 {date} | 🔴 {source_emoji} -{amount} | 📝 {desc}")
 
             text = (
@@ -497,7 +514,9 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
 
     if step == "amount":
         try:
-            amount = float(text.replace(",", "."))
+            amount = _to_amount(text)
+            if amount <= 0:
+                raise ValueError("Сумма должна быть положительной")
             if amount <= 0:
                 raise ValueError("Сумма должна быть положительной")
             context.user_data["amount"] = amount
@@ -515,7 +534,7 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
 
     elif step == "description":
         description = text
-        now = datetime.datetime.now().strftime("%d.%м.%Y %H:%M")
+        now = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
         amount = context.user_data.get("amount")
         category = context.user_data.get("category", "-")
         source = context.user_data.get("source", "-")
@@ -525,9 +544,9 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
                 sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Доход")
                 row = [now, category, "", "", description]  # C и D будут позже
                 if source == "Карта":
-                    row[2] = amount  # C
+                    row[2] = str(amount.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))  # C
                 else:
-                    row[3] = amount  # D
+                    row[3] = str(amount.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))  # D
                 sheet.append_row(row)
                 text_msg = (
                     f"✅ Добавлено в *Доход*:\n"
@@ -540,9 +559,9 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
                 sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Расход")
                 row = [now, "", "", description]  # B и C
                 if source == "Карта":
-                    row[1] = amount  # B
+                    row[1] = str(amount.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))  # B
                 else:
-                    row[2] = amount  # C
+                    row[2] = str(amount.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))  # C
                 sheet.append_row(row)
                 text_msg = (
                     f"✅ Добавлено в *Расход*:\n"
