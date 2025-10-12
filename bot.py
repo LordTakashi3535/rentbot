@@ -645,30 +645,46 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
             amount = _to_amount(text)
             if amount <= 0:
                 raise ValueError("Сумма должна быть положительной")
+    
             context.user_data["amount"] = amount
+    
+            # ---- МГНОВЕННЫЙ ПЕРЕВОД (без описания) ----
             if action == "transfer":
-                # Перевод без описания: выполняем сразу после ввода суммы
                 description = ""
                 direction = context.user_data.get("direction")
+    
                 try:
                     client = get_gspread_client()
                     income_ws = client.open_by_key(SPREADSHEET_ID).worksheet("Доход")
                     expense_ws = client.open_by_key(SPREADSHEET_ID).worksheet("Расход")
+    
                     now = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
+                    # Доход: [date, category, card(C), cash(D), desc]
                     income_row = [now, "Перевод", "", "", description]
+                    # Расход: [date, card(B), cash(C), desc]
                     expense_row = [now, "", "", description]
+    
                     q = str(amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+    
                     if direction == "card_to_cash":
-                        expense_row[1] = q  # B (карта)
-                        income_row[3] = q   # D (наличные)
+                        # расход по карте (B), доход в наличные (D)
+                        expense_row[1] = q  # B
+                        income_row[3] = q   # D
                         arrow = "💳 → 💵"
                     else:
-                        expense_row[2] = q  # C (наличные)
-                        income_row[2] = q   # C (карта)
+                        # расход по наличным (C), доход на карту (C)
+                        expense_row[2] = q  # C
+                        income_row[2] = q   # C
                         arrow = "💵 → 💳"
+    
+                    # Запись
                     expense_ws.append_row(expense_row, value_input_option="USER_ENTERED", table_range="A:D")
                     income_ws.append_row(income_row, value_input_option="USER_ENTERED", table_range="A:E")
+    
+                    # Баланс
                     live = compute_balance(client)
+    
+                    # Тебе — подробное сообщение (без описания)
                     text_msg = (
                         f"✅ Перевод выполнен:\n"
                         f"{arrow}  {amount}\n"
@@ -678,11 +694,14 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
                         f"💵 {_fmt_amount(live['Наличные'])}"
                     )
                     kb = InlineKeyboardMarkup([
-                        [InlineKeyboardButton("📥 Доход", callback_data="add_income"), InlineKeyboardButton("📤 Расход", callback_data="add_expense")],
+                        [InlineKeyboardButton("📥 Доход", callback_data="add_income"),
+                         InlineKeyboardButton("📤 Расход", callback_data="add_expense")],
                         [InlineKeyboardButton("⬅️ Назад", callback_data="menu")],
                     ])
                     context.user_data.clear()
                     await update.message.reply_text(text_msg, reply_markup=kb, parse_mode="Markdown")
+    
+                    # В канал — компактно, без описания
                     try:
                         group_msg = (
                             f"🔁 Перевод: {arrow} {_fmt_amount(amount)}\n"
@@ -691,22 +710,24 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
                         await context.bot.send_message(chat_id=REMINDER_CHAT_ID, text=group_msg, parse_mode="Markdown")
                     except Exception as e:
                         logger.error(f"Ошибка отправки в группу: {e}")
+    
                 except Exception as e:
                     logger.error(f"Ошибка перевода: {e}")
                     await update.message.reply_text("⚠️ Не удалось выполнить перевод.")
                 return
-context.user_data["step"] = "source"
-            keyboard = InlineKeyboardMarkup(
-                [
-                    [InlineKeyboardButton("💳 Карта", callback_data="source_card")],
-                    [InlineKeyboardButton("💵 Наличные", callback_data="source_cash")],
-                    [InlineKeyboardButton("❌ Отмена", callback_data="cancel")],
-                ]
-            )
+    
+            # ---- ДОХОД/РАСХОД: перейти к выбору источника ----
+            context.user_data["step"] = "source"
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("💳 Карта", callback_data="source_card")],
+                [InlineKeyboardButton("💵 Наличные", callback_data="source_cash")],
+                [InlineKeyboardButton("❌ Отмена", callback_data="cancel")],
+            ])
             await update.message.reply_text("Выберите источник:", reply_markup=keyboard)
-        except ValueError:
+    
+        except Exception:
             await update.message.reply_text("⚠️ Введите положительное число (пример: 1200.50)")
-
+        return
     elif step == "description":
         description = text
         now = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
