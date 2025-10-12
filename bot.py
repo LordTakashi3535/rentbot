@@ -260,6 +260,15 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "source_cash":
 
     elif data == "transfer":
+    # Start transfer flow: ask direction
+    context.user_data.clear()
+    context.user_data["action"] = "transfer"
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("💳 → 💵 С карты в наличные", callback_data="transfer_card_to_cash")],
+        [InlineKeyboardButton("💵 → 💳 С наличных на карту", callback_data="transfer_cash_to_card")],
+        [InlineKeyboardButton("❌ Отмена", callback_data="cancel")],
+    ])
+    await query.edit_message_text("Выберите направление перевода:", reply_markup=kb)
         # Start transfer flow: ask direction
         context.user_data.clear()
         context.user_data["action"] = "transfer"
