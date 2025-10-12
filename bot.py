@@ -480,86 +480,87 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
         return
 		        
     if action == "transfer" and step == "amount":
-        try:
-            cleaned = ''.join(ch for ch in text if ch.isdigit() or ch in ",.")
-            amount = float(cleaned.replace(",", "."))
-            if amount <= 0:
-                raise ValueError("Сумма должна быть положительной")
-
-            direction = context.user_data["direction"]
-			
-            client = get_gspread_client()
-            sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Сводка")
-            rows = sheet.get_all_values()
-
-            # Читаем текущие значения из таблицы
-            data = {row[0].strip(): row[1].strip() for row in rows if len(row) >= 2}
-            card = float(data.get("Карта", 0))
-            cash = float(data.get("Наличные", 0))
-            total = float(data.get("Баланс", card + cash))
-
-            # Логика перевода
-            if direction == "card_to_cash":
-                if card < amount:
-                    await update.message.reply_text("⚠️ Недостаточно средств на карте.")
-                    return
-                card -= amount
-                cash += amount
-                direction_text = "💳 → 💵 Перевод с карты на наличку"
-            else:
-                if cash < amount:
-                    await update.message.reply_text("⚠️ Недостаточно наличных.")
-                    return
-                cash -= amount
-                card += amount
-                direction_text = "💵 → 💳 Перевод с налички на карту"
-
-            # Обновляем значения в таблице
-            for i, row in enumerate(rows):
-                if row[0].strip().lower() == "карта":
-                    sheet.update_cell(i + 1, 2, str(card))
-                elif row[0].strip().lower() == "наличные":
-                    sheet.update_cell(i + 1, 2, str(cash))
-                elif row[0].strip().lower() == "баланс":
-                    sheet.update_cell(i + 1, 2, str(card + cash))
-
-            now = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
-
-            text = (
-                f"💱 *Перевод средств*\n"
-                f"📅 {now}\n"
-                f"{direction_text}\n"
-                f"💰 Сумма: {amount:,.2f}\n\n"
-                f"📊 *Текущий баланс:*\n"
-                f"💳 Карта: {card:,.2f}\n"
-                f"💵 Наличные: {cash:,.2f}\n"
-                f"💼 Общий: {card + cash:,.2f}"
-            )
-
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("⬅️ Назад", callback_data="menu")]
-            ])
-
-            context.user_data.clear()
-            await update.message.reply_text(text, reply_markup=keyboard, parse_mode="Markdown")
-
-            # 🔔 Отправляем сообщение в Telegram-канал
-            try:
-                await context.bot.send_message(
-                    chat_id=REMINDER_CHAT_ID,
-                    text=text,
-                    parse_mode="Markdown"
-                )
-            except Exception as e:
-                logger.error(f"Ошибка отправки перевода в канал: {e}")
-
-        except ValueError:
-            await update.message.reply_text("⚠️ Введите положительное число (пример: 500.00)")
-        except Exception as e:
-            logger.error(f"Ошибка перевода: {e}")
-            await update.message.reply_text("❌ Ошибка при переводе средств.")
-        return
-
+	    try:
+	        # Очищаем ввод от пробелов и заменяем запятую на точку
+	        cleaned_text = text.strip().replace(",", ".")
+	        amount = float(cleaned_text)
+	        if amount <= 0:
+	            raise ValueError("Сумма должна быть положительной")
+	
+	        direction = context.user_data.get("direction")
+	        if direction not in ["card_to_cash", "cash_to_card"]:
+	            await update.message.reply_text("⚠️ Некорректное направление перевода.")
+	            return
+	
+	        # Получаем текущие балансы
+	        client = get_gspread_client()
+	        sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Сводка")
+	        rows = sheet.get_all_values()
+	        data = {row[0].strip(): row[1].strip() for row in rows if len(row) >= 2}
+	
+	        card = float(data.get("Карта", 0) or 0)
+	        cash = float(data.get("Наличные", 0) or 0)
+	
+	        # Логика перевода
+	        if direction == "card_to_cash":
+	            if card < amount:
+	                await update.message.reply_text("⚠️ Недостаточно средств на карте.")
+	                return
+	            card -= amount
+	            cash += amount
+	            direction_text = "💳 → 💵 Перевод с карты на наличку"
+	        else:
+	            if cash < amount:
+	                await update.message.reply_text("⚠️ Недостаточно наличных.")
+	                return
+	            cash -= amount
+	            card += amount
+	            direction_text = "💵 → 💳 Перевод с налички на карту"
+	
+	        # Обновляем таблицу
+	        for i, row in enumerate(rows):
+	            key = row[0].strip().lower()
+	            if key == "карта":
+	                sheet.update_cell(i + 1, 2, str(card))
+	            elif key == "наличные":
+	                sheet.update_cell(i + 1, 2, str(cash))
+	            elif key == "баланс":
+	                sheet.update_cell(i + 1, 2, str(card + cash))
+	
+	        now = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
+	        msg_text = (
+	            f"💱 *Перевод средств*\n"
+	            f"📅 {now}\n"
+	            f"{direction_text}\n"
+	            f"💰 Сумма: {amount:,.2f}\n\n"
+	            f"📊 *Текущий баланс:*\n"
+	            f"💳 Карта: {card:,.2f}\n"
+	            f"💵 Наличные: {cash:,.2f}\n"
+	            f"💼 Общий: {card + cash:,.2f}"
+	        )
+	
+	        keyboard = InlineKeyboardMarkup([
+	            [InlineKeyboardButton("⬅️ Назад", callback_data="menu")]
+	        ])
+	
+	        context.user_data.clear()
+	        await update.message.reply_text(msg_text, reply_markup=keyboard, parse_mode="Markdown")
+	
+	        # Отправляем в канал
+	        try:
+	            await context.bot.send_message(
+	                chat_id=REMINDER_CHAT_ID,
+	                text=msg_text,
+	                parse_mode="Markdown"
+	            )
+	        except Exception as e:
+	            logger.error(f"Ошибка отправки перевода в канал: {e}")
+	
+	    except ValueError:
+	        await update.message.reply_text("⚠️ Введите положительное число (пример: 500.00)")
+	    except Exception as e:
+	        logger.error(f"Ошибка перевода: {e}")
+	        await update.message.reply_text("❌ Ошибка при переводе средств.")
 
     if step == "amount":
         try:
