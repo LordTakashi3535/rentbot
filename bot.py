@@ -77,10 +77,10 @@ def _fmt_amount(val):
 
 def compute_balance(client):
     """
-    Calculate balances directly from sheets:
-    - "Доход": card=C, cash=D
-    - "Расход": card=B, cash=C
-    Returns dict with Decimal values: {"Баланс": x, "Карта": y, "Наличные": z}
+    Формулы точно как в листе 'Сводка':
+    - Наличные = СУММ('Доход'!D) - СУММ('Расход'!C)
+    - Карта = INITIAL_BALANCE + СУММ('Доход'!C) - СУММ('Расход'!B)
+    - Баланс = Карта + Наличные
     """
     income_ws = client.open_by_key(SPREADSHEET_ID).worksheet("Доход")
     expense_ws = client.open_by_key(SPREADSHEET_ID).worksheet("Расход")
@@ -104,16 +104,16 @@ def compute_balance(client):
         if len(r) > 2:
             expense_cash += _to_amount(r[2])
 
-    card_bal = income_card - expense_card
-cash_bal = income_cash - expense_cash
+    # Формулы как в листе 'Сводка'
+    cash_bal_display = income_cash - expense_cash  # = SUM(Доход!D) - SUM(Расход!C)
+    card_bal_display = INITIAL_BALANCE + income_card - expense_card  # = INITIAL + SUM(Доход!C) - SUM(Расход!B)
+    total_bal = card_bal_display + cash_bal_display  # = Карта + Наличные
 
-# Формулы как в листе 'Сводка'
-cash_bal_display = cash_bal  # = SUM(Доход!D) - SUM(Расход!C)
-card_bal_display = INITIAL_BALANCE + card_bal  # = INITIAL + SUM(Доход!C) - SUM(Расход!B)
-total_bal = INITIAL_BALANCE + (income_card + income_cash) - (expense_card + expense_cash)
-
-return {"Баланс": total_bal, "Карта": card_bal_display, "Наличные": cash_bal_display}
-
+    return {
+        "Баланс": total_bal,
+        "Карта": card_bal_display,
+        "Наличные": cash_bal_display,
+    }
 
 def compute_summary(client):
     """
