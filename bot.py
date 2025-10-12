@@ -283,9 +283,6 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "contracts" or data == "договора":
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="menu")]])
         await query.edit_message_text("📄 Раздел «Договора»: в разработке.", reply_markup=kb)
-        context.user_data["source"] = "Наличные"
-        context.user_data["step"] = "description"
-        await query.edit_message_text("Введите описание:")
 
     elif data == "insurance":
         try:
