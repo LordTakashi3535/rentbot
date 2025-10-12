@@ -491,32 +491,35 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
             sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Сводка")
             rows = sheet.get_all_values()
 
+            # Читаем текущие значения из таблицы
             data = {row[0].strip(): row[1].strip() for row in rows if len(row) >= 2}
             card = float(data.get("Карта", 0))
             cash = float(data.get("Наличные", 0))
+            total = float(data.get("Баланс", card + cash))
 
+            # Логика перевода
             if direction == "card_to_cash":
                 if card < amount:
                     await update.message.reply_text("⚠️ Недостаточно средств на карте.")
                     return
                 card -= amount
                 cash += amount
-                direction_text = "💳 → 💵 (с карты на наличку)"
+                direction_text = "💳 → 💵 Перевод с карты на наличку"
             else:
                 if cash < amount:
                     await update.message.reply_text("⚠️ Недостаточно наличных.")
                     return
                 cash -= amount
                 card += amount
-                direction_text = "💵 → 💳 (с налички на карту)"
+                direction_text = "💵 → 💳 Перевод с налички на карту"
 
-            # Обновляем в таблице
+            # Обновляем значения в таблице
             for i, row in enumerate(rows):
-                if row[0].strip() == "Карта":
+                if row[0].strip().lower() == "карта":
                     sheet.update_cell(i + 1, 2, str(card))
-                elif row[0].strip() == "Наличные":
+                elif row[0].strip().lower() == "наличные":
                     sheet.update_cell(i + 1, 2, str(cash))
-                elif row[0].strip() == "Баланс":
+                elif row[0].strip().lower() == "баланс":
                     sheet.update_cell(i + 1, 2, str(card + cash))
 
             now = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
@@ -526,7 +529,7 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
                 f"📅 {now}\n"
                 f"{direction_text}\n"
                 f"💰 Сумма: {amount:,.2f}\n\n"
-                f"📊 *Баланс обновлён:*\n"
+                f"📊 *Текущий баланс:*\n"
                 f"💳 Карта: {card:,.2f}\n"
                 f"💵 Наличные: {cash:,.2f}\n"
                 f"💼 Общий: {card + cash:,.2f}"
@@ -555,6 +558,7 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
             logger.error(f"Ошибка перевода: {e}")
             await update.message.reply_text("❌ Ошибка при переводе средств.")
         return
+
 
     if step == "amount":
         try:
