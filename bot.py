@@ -216,7 +216,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("⚠️ Не удалось получить данные по тех.осмотрам.")
 			
     elif data == "transfer":
-		context.user_data.clear()
+        context.user_data.clear()
         context.user_data["action"] = "transfer_direction"
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("💳 → 💵", callback_data="transfer_card_to_cash")],
@@ -229,7 +229,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["action"] = "transfer"
         context.user_data["direction"] = "card_to_cash" if data == "transfer_card_to_cash" else "cash_to_card"
         context.user_data["step"] = "amount"
-        await query.edit_message_text("Введите сумму перевода:", reply_markup=cancel_keyboard())		
+        await query.edit_message_text("Введите сумму перевода:", reply_markup=cancel_keyboard())
 
     elif data == "edit_insurance":
         context.user_data["edit_type"] = "insurance"
