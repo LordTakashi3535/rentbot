@@ -1,0 +1,1 @@
+Ошибка форматирования: invalid syntax (<unknown>, line 1)
