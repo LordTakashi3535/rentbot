@@ -547,7 +547,7 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
                     row[2] = str(amount.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))  # C
                 else:
                     row[3] = str(amount.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))  # D
-                sheet.append_row(row)
+                sheet.append_row(row, value_input_option="USER_ENTERED")
                 text_msg = (
                     f"✅ Добавлено в *Доход*:\n"
                     f"📅 {now}\n"
@@ -562,7 +562,7 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
                     row[1] = str(amount.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))  # B
                 else:
                     row[2] = str(amount.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))  # C
-                sheet.append_row(row)
+                sheet.append_row(row, value_input_option="USER_ENTERED")
                 text_msg = (
                     f"✅ Добавлено в *Расход*:\n"
                     f"📅 {now}\n"
