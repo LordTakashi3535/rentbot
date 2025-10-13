@@ -287,44 +287,49 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             rows = ws.get_all_values()
 
             if not rows or len(rows) < 2:
-                text = "🚗 Автомобили:\nСписок пуст."
+                text = "🚗 *Автомобили:*\n\nСписок пуст."
             else:
                 header = rows[0]
                 body = rows[1:]
 
-                # Индексы колонок по заголовкам (порядок может быть любым)
+                # Индексируем колонки по заголовкам
                 idx = {name.strip(): i for i, name in enumerate(header)}
                 def g(row, key):
                     i = idx.get(key)
                     return row[i].strip() if (i is not None and i < len(row)) else ""
 
-                lines = []
-                for i, r in enumerate(body, start=1):
+                cards = []
+                for r in body:
                     name  = g(r, "Название") or "-"
                     vin   = g(r, "VIN") or "-"
                     plate = g(r, "Номер") or "-"
 
-                    # Заглушки — позже подставим реальные расчёты/даты из этого же листа
-                    ins_left  = "—"   # Страховка: осталось дней
-                    tech_left = "—"   # Техосмотр: осталось дней
+                    # заглушки — позже подставим реальные даты/расчёт
+                    ins_left  = "—"
+                    tech_left = "—"
 
-                    lines.append(
-                        f"{i}) {name}\n"
-                        f"   VIN: {vin} | №: {plate}\n"
-                        f"   Страховка: {ins_left} | Техосмотр: {tech_left}"
+                    card = (
+                        f"🚘 *{name}*\n"
+                        f"🔑 _VIN:_ `{vin}`\n"
+                        f"🔖 _Номер:_ `{plate}`\n"
+                        f"🛡️ _Страховка:_ —\n"
+                        f"🧰 _Техосмотр:_ —"
                     )
+                    cards.append(card)
 
-                text = "🚗 Автомобили:\n" + "\n\n".join(lines)
+                text = "🚗 *Автомобили:*\n\n" + ("\n──────────\n".join(cards) if cards else "Список пуст.")
 
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("➕ Создать автомобиль", callback_data="create_car")],
                 [InlineKeyboardButton("⬅️ Назад", callback_data="menu")],
             ])
-            await query.edit_message_text(text, reply_markup=keyboard)
+            # важное: включаем Markdown, чтобы заголовок был жирным и эмодзи корректно отображались
+            await query.edit_message_text(text, reply_markup=keyboard, parse_mode="Markdown")
 
         except Exception as e:
             logger.error(f"Ошибка списка авто: {e}")
             await query.message.reply_text("⚠️ Не удалось загрузить список «Автомобили».")
+
 
     elif data == "insurance":
         try:
