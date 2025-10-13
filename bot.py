@@ -466,7 +466,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                     cards.append(card)
 
-                separator = "─" * 20  # ← длина линии (поменяй на сколько хочешь)
+                separator = "─" * 15  # ← длина линии (поменяй на сколько хочешь)
                 text = "🚗 *Автомобили:*\n\n" + f"\n{separator}\n".join(cards)
 
 
