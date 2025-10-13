@@ -185,7 +185,7 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ],
             [
                 InlineKeyboardButton("🔁 Перевод", callback_data="transfer"),
-                InlineKeyboardButton("📄 Договора", callback_data="contracts"),
+                InlineKeyboardButton("🚗 Автомобили", callback_data="cars")
             ],
             [
                 InlineKeyboardButton("🛡 Страховки", callback_data="insurance"),
@@ -280,9 +280,9 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["step"] = "amount"
         await query.edit_message_text("Введите сумму перевода:", reply_markup=cancel_keyboard())
 
-    elif data == "contracts" or data == "договора":
+    elif data == "cars":
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="menu")]])
-        await query.edit_message_text("📄 Раздел «Договора»: в разработке.", reply_markup=kb)
+        await query.edit_message_text("🚗 Раздел «Автомобили»: в разработке.", reply_markup=kb)
 
     elif data == "insurance":
         try:
