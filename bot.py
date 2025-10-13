@@ -284,28 +284,40 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             client = get_gspread_client()
             ws = client.open_by_key(SPREADSHEET_ID).worksheet("Автомобили")
-            rows = ws.get_all_values()[1:]  # можно и без загрузки, если просто заглушка
+            rows = ws.get_all_values()[1:]  # без заголовка
 
-            text = "🚗 Автомобили:\n" + ("\n".join(
-                f"{i}) {r[1]} — {r[3]} — {_fmt_amount(_to_amount(r[4]))}/сутки"
-                for i, r in enumerate(rows, start=1) if len(r) >= 5
-            ) if rows else "Список пуст.")
+            if rows:
+                lines = []
+                buttons = []
+                for i, r in enumerate(rows, start=1):
+                    car_id   = r[0] if len(r) > 0 else "-"
+                    name     = r[1] if len(r) > 1 else "-"
+                    vin      = r[2] if len(r) > 2 else "-"
+                    plate    = r[3] if len(r) > 3 else "-"
+                    lines.append(f"{i}) {name} — VIN: {vin} — №: {plate}")
+                    # кнопка подробностей по ID (на будущее)
+                    buttons.append([InlineKeyboardButton(f"ℹ️ {name}", callback_data=f"car_{car_id}")])
 
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("➕ Создать автомобиль", callback_data="create_car")],
-                [InlineKeyboardButton("⬅️ Назад", callback_data="menu")],
-            ])
-            await query.edit_message_text(text, reply_markup=keyboard)
+                text = "🚗 Автомобили:\n" + "\n".join(lines)
+            else:
+                text = "🚗 Автомобили:\nСписок пуст."
+
+            # кнопки: создать + назад (+ детали, если есть)
+            kb_rows = [[InlineKeyboardButton("➕ Создать автомобиль", callback_data="create_car")]]
+            if rows:
+                kb_rows += buttons
+            kb_rows += [[InlineKeyboardButton("⬅️ Назад", callback_data="menu")]]
+
+            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb_rows))
         except Exception as e:
             logger.error(f"Ошибка списка авто: {e}")
-            await query.message.reply_text("⚠️ Не удалось загрузить список.")
+            await query.message.reply_text("⚠️ Не удалось загрузить список «Автомобили».")
 
     elif data == "create_car":
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("⬅️ Назад", callback_data="cars")],
-            [InlineKeyboardButton("⬅️ Главное меню", callback_data="menu")],
-        ])
-        await query.edit_message_text("🛠 Создание автомобиля: в разработке.", reply_markup=kb)       
+        context.user_data.clear()
+        context.user_data["action"] = "create_car"
+        context.user_data["step"] = "car_name"
+        await query.edit_message_text("Введите *название авто* (например: Mazda 3):", reply_markup=cancel_keyboard(), parse_mode="Markdown")
 
     elif data == "insurance":
         try:
@@ -837,6 +849,79 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
             logger.error(f"Ошибка записи: {e}")
             await update.message.reply_text("⚠️ Ошибка записи в таблицу.")
         return
+    # ===== СОЗДАНИЕ АВТО =====
+    if context.user_data.get("action") == "create_car":
+        step = context.user_data.get("step")
+
+        # 1) Название
+        if step == "car_name":
+            name = (text or "").strip()
+            if not name:
+                await update.message.reply_text("⚠️ Введите название, например: Mazda 3")
+                return
+            context.user_data["car_name"] = name
+            context.user_data["step"] = "car_vin"
+            await update.message.reply_text("Введите *VIN* (17 символов, латиница+цифры):", parse_mode="Markdown")
+            return
+
+        # 2) VIN
+        if step == "car_vin":
+            vin = (text or "").strip().upper().replace(" ", "")
+            # Базовая валидация (длина 17 и без I/O/Q)
+            bad = set("IOQ")
+            if len(vin) != 17 or any(ch in bad for ch in vin):
+                await update.message.reply_text("⚠️ VIN должен быть 17 символов, без I/O/Q. Попробуйте снова.")
+                return
+            context.user_data["car_vin"] = vin
+            context.user_data["step"] = "car_plate"
+            await update.message.reply_text("Введите *госномер* (как в техпаспорте):", parse_mode="Markdown")
+            return
+
+        # 3) Номер (госномер) -> запись в таблицу
+        if step == "car_plate":
+            plate = (text or "").strip().upper()
+            if not plate:
+                await update.message.reply_text("⚠️ Введите госномер.")
+                return
+            context.user_data["car_plate"] = plate
+
+            # Записываем в Google Sheets
+            try:
+                client = get_gspread_client()
+                ws = client.open_by_key(SPREADSHEET_ID).worksheet("Автомобили")
+
+                new_id = datetime.datetime.now().strftime("car_%Y%m%d_%H%M%S")
+                now = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
+
+                row = [
+                    new_id,                          # A: ID
+                    context.user_data["car_name"],   # B: Название
+                    context.user_data["car_vin"],    # C: VIN
+                    context.user_data["car_plate"],  # D: Номер
+                    now,                             # E: Дата создания
+                ]
+                ws.append_row(row, value_input_option="USER_ENTERED", table_range="A:E")
+
+                # Ответ пользователю
+                msg = (
+                    "✅ Авто создано:\n"
+                    f"ID: {new_id}\n"
+                    f"Название: {context.user_data['car_name']}\n"
+                    f"VIN: {context.user_data['car_vin']}\n"
+                    f"Номер: {context.user_data['car_plate']}\n"
+                    f"Дата: {now}"
+                )
+                context.user_data.clear()
+                kb = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅️ К списку автомобилей", callback_data="cars")],
+                    [InlineKeyboardButton("⬅️ Главное меню", callback_data="menu")],
+                ])
+                await update.message.reply_text(msg, reply_markup=kb)
+
+            except Exception as e:
+                logger.error(f"Ошибка создания авто: {e}")
+                await update.message.reply_text("⚠️ Не удалось создать автомобиль. Проверьте лист «Автомобили».")
+            return    
 
 async def check_reminders(app):
     while True:
