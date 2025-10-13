@@ -257,27 +257,16 @@ def persistent_menu_keyboard():
 
 # Показываем меню (inline кнопки) и добавляем кнопку "Меню" под полем ввода
 async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    inline_keyboard = InlineKeyboardMarkup(
-        [
-            [InlineKeyboardButton("📊 Баланс", callback_data="balance")],
-            [
-                InlineKeyboardButton("📥 Доход", callback_data="add_income"),
-                InlineKeyboardButton("📤 Расход", callback_data="add_expense"),
-            ],
-            [
-                InlineKeyboardButton("🔁 Перевод", callback_data="transfer"),
-                InlineKeyboardButton("🚗 Автомобили", callback_data="cars")
-            ],
-            [
-                InlineKeyboardButton("🛡 Страховки", callback_data="insurance"),
-                InlineKeyboardButton("🧰 Тех.Осмотры", callback_data="tech"),
-            ],
-            [
-                InlineKeyboardButton("📈 Отчёт 7 дней", callback_data="report_7"),
-                InlineKeyboardButton("📊 Отчёт 30 дней", callback_data="report_30"),
-            ],
-        ]
-    )
+    inline_keyboard = InlineKeyboardMarkup([
+    [InlineKeyboardButton("📊 Баланс", callback_data="balance")],
+    [InlineKeyboardButton("📥 Доход", callback_data="add_income"),
+     InlineKeyboardButton("📤 Расход", callback_data="add_expense")],
+    [InlineKeyboardButton("🔁 Перевод", callback_data="transfer"),
+     InlineKeyboardButton("🚗 Автомобили", callback_data="cars")],
+    [InlineKeyboardButton("📈 Отчёт 7 дней", callback_data="report_7"),
+     InlineKeyboardButton("📊 Отчёт 30 дней", callback_data="report_30")],
+])
+
     reply_kb = persistent_menu_keyboard()
 
     if update.message:
@@ -513,108 +502,6 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="Markdown",
             )
         return
-
-    elif data == "insurance":
-        try:
-            sheet = get_gspread_client().open_by_key(SPREADSHEET_ID).worksheet("Страховки")
-            rows = sheet.get_all_values()[1:]
-            if not rows:
-                await query.edit_message_text(
-                    "🚗 Страховки не найдены.",
-                    reply_markup=InlineKeyboardMarkup(
-                        [[InlineKeyboardButton("⬅️ Назад", callback_data="menu")]]
-                    ),
-                )
-                return
-
-            text = "🚗 Страховки:\n"
-            today = datetime.datetime.now().date()
-            for i, row in enumerate(rows):
-                name = row[0]
-                date_str = row[1] if len(row) > 1 else None
-                days_left = "—"
-                if date_str:
-                    try:
-                        deadline = datetime.datetime.strptime(date_str, "%d.%m.%Y").date()
-                        delta = (deadline - today).days
-                        if delta > 0:
-                            days_left = f"осталось {delta} дней"
-                        elif delta == 0:
-                            days_left = "сегодня"
-                        else:
-                            days_left = f"просрочено на {abs(delta)} дней"
-                    except ValueError:
-                        days_left = "неверный формат даты"
-                text += f"{i+1}. {name} до {date_str or '—'} ({days_left})\n"
-
-            keyboard = InlineKeyboardMarkup(
-                [
-                    [InlineKeyboardButton("✏️ Изменить", callback_data="edit_insurance")],
-                    [InlineKeyboardButton("⬅️ Назад", callback_data="menu")],
-                ]
-            )
-            await query.edit_message_text(text, reply_markup=keyboard)
-        except Exception as e:
-            logger.error(f"Ошибка страховок: {e}")
-            await query.message.reply_text("⚠️ Не удалось получить данные по страховкам.")
-
-    elif data == "tech":
-        try:
-            sheet = get_gspread_client().open_by_key(SPREADSHEET_ID).worksheet("ТехОсмотры")
-            rows = sheet.get_all_values()[1:]
-            if not rows:
-                await query.edit_message_text(
-                    "🧰 Тех.Осмотры не найдены.",
-                    reply_markup=InlineKeyboardMarkup(
-                        [[InlineKeyboardButton("⬅️ Назад", callback_data="menu")]]
-                    ),
-                )
-                return
-
-            text = "🧰 Тех.Осмотры:\n"
-            today = datetime.datetime.now().date()
-            for i, row in enumerate(rows):
-                name = row[0]
-                date_str = row[1] if len(row) > 1 else None
-                days_left = "—"
-                if date_str:
-                    try:
-                        deadline = datetime.datetime.strptime(date_str, "%d.%m.%Y").date()
-                        delta = (deadline - today).days
-                        if delta > 0:
-                            days_left = f"осталось {delta} дней"
-                        elif delta == 0:
-                            days_left = "сегодня"
-                        else:
-                            days_left = f"просрочено на {abs(delta)} дней"
-                    except ValueError:
-                        days_left = "неверный формат даты"
-                text += f"{i+1}. {name} до {date_str or '—'} ({days_left})\n"
-
-            keyboard = InlineKeyboardMarkup(
-                [
-                    [InlineKeyboardButton("✏️ Изменить", callback_data="edit_tech")],
-                    [InlineKeyboardButton("⬅️ Назад", callback_data="menu")],
-                ]
-            )
-            await query.edit_message_text(text, reply_markup=keyboard)
-        except Exception as e:
-            logger.error(f"Ошибка тех.осмотров: {e}")
-            await query.message.reply_text("⚠️ Не удалось получить данные по тех.осмотрам.")
-
-    elif data == "edit_insurance":
-        context.user_data["edit_type"] = "insurance"
-        await query.edit_message_text(
-            "Введите название машины и дату через тире (Пример: Toyota - 01.09.2025)",
-            reply_markup=cancel_keyboard(),
-        )
-
-    elif data == "edit_tech":
-        context.user_data["edit_type"] = "tech"
-        await query.edit_message_text(
-            "Введите название машины и дату через тире (Пример: BMW - 15.10.2025)",
-            reply_markup=cancel_keyboard(),
-        )
 
     elif data == "balance":
         try:
