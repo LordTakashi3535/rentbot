@@ -317,7 +317,9 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                     cards.append(card)
 
-                text = "🚗 *Автомобили:*\n\n" + ("\n──────────\n".join(cards) if cards else "Список пуст.")
+                separator = "─" * 50  # ← длина линии (поменяй на сколько хочешь)
+                text = "🚗 *Автомобили:*\n\n" + f"\n{separator}\n".join(cards)
+
 
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("➕ Создать автомобиль", callback_data="create_car")],
