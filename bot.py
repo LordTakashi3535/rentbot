@@ -284,41 +284,64 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             client = get_gspread_client()
             ws = client.open_by_key(SPREADSHEET_ID).worksheet("Автомобили")
-            rows = ws.get_all_values()[1:]  # без заголовка
+            rows = ws.get_all_values()
 
-            if rows:
-                lines = []
-                buttons = []
-                for i, r in enumerate(rows, start=1):
-                    car_id   = r[0] if len(r) > 0 else "-"
-                    name     = r[1] if len(r) > 1 else "-"
-                    vin      = r[2] if len(r) > 2 else "-"
-                    plate    = r[3] if len(r) > 3 else "-"
-                    lines.append(f"{i}) {name} — VIN: {vin} — №: {plate}")
-                    # кнопка подробностей по ID (на будущее)
-                    buttons.append([InlineKeyboardButton(f"ℹ️ {name}", callback_data=f"car_{car_id}")])
-
-                text = "🚗 Автомобили:\n" + "\n".join(lines)
-            else:
+            if not rows or len(rows) < 2:
                 text = "🚗 Автомобили:\nСписок пуст."
+            else:
+                header = rows[0]  # заголовки
+                body = rows[1:]
 
-            # кнопки: создать + назад (+ детали, если есть)
-            kb_rows = [[InlineKeyboardButton("➕ Создать автомобиль", callback_data="create_car")]]
-            if rows:
-                kb_rows += buttons
-            kb_rows += [[InlineKeyboardButton("⬅️ Назад", callback_data="menu")]]
+                # Индексы колонок по заголовкам (работает, даже если порядок другой)
+                idx = {name.strip(): i for i, name in enumerate(header)}
+                def g(row, key):
+                    i = idx.get(key)
+                    return row[i].strip() if (i is not None and i < len(row)) else ""
 
-            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb_rows))
+                lines = []
+                for i, r in enumerate(body, start=1):
+                    name     = g(r, "Название") or "-"
+                    vin      = g(r, "VIN") or "-"
+                    plate    = g(r, "Номер") or "-"
+                    status   = g(r, "Статус") or "-"
+                    price    = g(r, "Сутки") or ""
+                    deposit  = g(r, "Залог") or ""
+                    mileage  = g(r, "Пробег") or ""
+                    comment  = g(r, "Комментарий") or ""
+
+                    # Красивое форматирование чисел, если они есть
+                    try:
+                        price_fmt = _fmt_amount(_to_amount(price)) if price else "-"
+                    except Exception:
+                        price_fmt = price or "-"
+                    try:
+                        dep_fmt = _fmt_amount(_to_amount(deposit)) if deposit else "-"
+                    except Exception:
+                        dep_fmt = deposit or "-"
+
+                    block = (
+                        f"{i}) {name}\n"
+                        f"   VIN: {vin} | №: {plate}\n"
+                        f"   Статус: {status}\n"
+                        f"   Сутки: {price_fmt} | Залог: {dep_fmt}\n"
+                        f"   Пробег: {mileage}\n"
+                        f"   Комментарий: {comment}"
+                    ).rstrip()
+
+                    lines.append(block)
+
+                text = "🚗 Автомобили:\n" + "\n\n".join(lines)
+
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("➕ Создать автомобиль", callback_data="create_car")],
+                [InlineKeyboardButton("⬅️ Назад", callback_data="menu")],
+            ])
+            await query.edit_message_text(text, reply_markup=keyboard)
+
         except Exception as e:
             logger.error(f"Ошибка списка авто: {e}")
             await query.message.reply_text("⚠️ Не удалось загрузить список «Автомобили».")
-
-    elif data == "create_car":
-        context.user_data.clear()
-        context.user_data["action"] = "create_car"
-        context.user_data["step"] = "car_name"
-        await query.edit_message_text("Введите *название авто* (например: Mazda 3):", reply_markup=cancel_keyboard(), parse_mode="Markdown")
-
+            
     elif data == "insurance":
         try:
             sheet = get_gspread_client().open_by_key(SPREADSHEET_ID).worksheet("Страховки")
