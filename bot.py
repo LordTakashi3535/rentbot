@@ -1225,7 +1225,7 @@ async def check_reminders(app):
             logger.error(f"Ошибка при проверке напоминаний: {e}")
 
         # спим 24 часа (можно уменьшить до 6–12, если хочешь чаще)
-        await asyncio.sleep(60)
+        await asyncio.sleep(86400)
 
 async def on_startup(app):
     asyncio.create_task(check_reminders(app))
