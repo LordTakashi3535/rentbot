@@ -332,25 +332,25 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
     elif data == "create_car":
-    # старт мастера создания авто
-    context.user_data.clear()
-    context.user_data["action"] = "create_car"
-    context.user_data["step"] = "car_name"
-    try:
-        await query.edit_message_text(
-            "Введите *название авто* (например: Mazda 3):",
-            reply_markup=cancel_keyboard(),
-            parse_mode="Markdown",
-        )
-    except Exception as e:
-        # если редактирование нельзя – отправим обычным сообщением
-        logger.error(f"create_car edit failed: {e}")
-        await query.message.reply_text(
-            "Введите *название авто* (например: Mazda 3):",
-            reply_markup=cancel_keyboard(),
-            parse_mode="Markdown",
-        )
-    return
+        # старт мастера создания авто
+        context.user_data.clear()
+        context.user_data["action"] = "create_car"
+        context.user_data["step"] = "car_name"
+        try:
+            await query.edit_message_text(
+                "Введите *название авто* (например: Mazda 3):",
+                reply_markup=cancel_keyboard(),
+                parse_mode="Markdown",
+            )
+        except Exception as e:
+            # если редактирование нельзя – отправим обычным сообщением
+            logger.error(f"create_car edit failed: {e}")
+            await query.message.reply_text(
+                "Введите *название авто* (например: Mazda 3):",
+                reply_markup=cancel_keyboard(),
+                parse_mode="Markdown",
+            )
+        return
 
     elif data == "insurance":
         try:
