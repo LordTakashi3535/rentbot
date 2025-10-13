@@ -7,6 +7,30 @@ import datetime
 import re
 import asyncio
 
+def _ensure_column(ws, header_name: str) -> int:
+    """Вернёт индекс колонки по заголовку. Если нет — создаст новую справа и вернёт её индекс."""
+    header = ws.row_values(1)
+    if header_name in header:
+        return header.index(header_name) + 1
+    col = len(header) + 1
+    ws.update_cell(1, col, header_name)
+    return col
+
+def _find_row_by_name(ws, name: str, name_header: str = "Название") -> int | None:
+    """Вернёт индекс строки (2..N) по названию авто, иначе None."""
+    rows = ws.get_all_values()
+    if not rows:
+        return None
+    header = rows[0]
+    try:
+        name_idx = header.index(name_header)
+    except ValueError:
+        return None
+    for i, r in enumerate(rows[1:], start=2):
+        if name_idx < len(r) and r[name_idx].strip() == name.strip():
+            return i
+    return None
+
 from decimal import Decimal, ROUND_HALF_UP
 
 from oauth2client.service_account import ServiceAccountCredentials
@@ -235,6 +259,86 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await query.edit_message_text("Выберите категорию дохода:", reply_markup=keyboard)
 
+    elif data == "cars_edit":
+        # список всех машин по названию
+        try:
+            client = get_gspread_client()
+            ws = client.open_by_key(SPREADSHEET_ID).worksheet("Автомобили")
+            rows = ws.get_all_values()
+            if not rows or len(rows) < 2:
+                kb = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="cars")]])
+                await query.edit_message_text("Список пуст.", reply_markup=kb)
+                return
+
+            header, body = rows[0], rows[1:]
+            try:
+                name_idx = header.index("Название")
+            except ValueError:
+                kb = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="cars")]])
+                await query.edit_message_text("Не найдена колонка «Название».", reply_markup=kb)
+                return
+
+            # Кнопки по именам
+            btns = []
+            for r in body:
+                if name_idx < len(r) and r[name_idx].strip():
+                    name = r[name_idx].strip()
+                    btns.append([InlineKeyboardButton(name, callback_data=f"editcar_select|{name}")])
+
+            btns.append([InlineKeyboardButton("⬅️ Назад", callback_data="cars")])
+            await query.edit_message_text("Выберите автомобиль для редактирования:", reply_markup=InlineKeyboardMarkup(btns))
+        except Exception as e:
+            logger.error(f"cars_edit error: {e}")
+            await query.message.reply_text("⚠️ Не удалось загрузить список.")
+        return
+
+    elif data.startswith("editcar_select|"):
+        # выбрали конкретную машину — показываем, что редактировать
+        name = data.split("|", 1)[1]
+        context.user_data["edit_car_name"] = name
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🛡️ Страховка", callback_data="editcar_field|insurance")],
+            [InlineKeyboardButton("🧰 Техосмотр", callback_data="editcar_field|tech")],
+            [InlineKeyboardButton("🗑 Удалить машину", callback_data="editcar_delete_confirm")],
+            [InlineKeyboardButton("⬅️ Назад", callback_data="cars_edit")],
+        ])
+        await query.edit_message_text(f"🚘 {name}\nЧто редактировать?", reply_markup=kb)
+        return
+
+    elif data.startswith("editcar_field|"):
+        field = data.split("|", 1)[1]   # insurance | tech
+        context.user_data["action"] = "edit_car"
+        context.user_data["step"] = f"edit_{field}"
+        prompt = "Введите дату страховки (ДД.ММ.ГГГГ):" if field == "insurance" else "Введите дату техосмотра (ДД.ММ.ГГГГ):"
+        await query.edit_message_text(prompt, reply_markup=cancel_keyboard())
+        return
+
+    elif data == "editcar_delete_confirm":
+        name = context.user_data.get("edit_car_name", "-")
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Да, удалить", callback_data="editcar_delete_yes")],
+            [InlineKeyboardButton("⬅️ Отмена", callback_data="cars_edit")],
+        ])
+        await query.edit_message_text(f"Удалить «{name}» безвозвратно?", reply_markup=kb)
+        return
+
+    elif data == "editcar_delete_yes":
+        try:
+            client = get_gspread_client()
+            ws = client.open_by_key(SPREADSHEET_ID).worksheet("Автомобили")
+            row_idx = _find_row_by_name(ws, context.user_data.get("edit_car_name", ""))
+            if not row_idx:
+                await query.edit_message_text("Авто не найдено.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="cars_edit")]]))
+                return
+            ws.delete_rows(row_idx)
+            context.user_data.pop("edit_car_name", None)
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ К списку", callback_data="cars")]])
+            await query.edit_message_text("✅ Машина удалена.", reply_markup=kb)
+        except Exception as e:
+            logger.error(f"delete car error: {e}")
+            await query.message.reply_text("⚠️ Не удалось удалить.")
+        return    
+
     elif data in ["cat_franky", "cat_fraiz", "cat_other"]:
         category_map = {
             "cat_franky": "Franky",
@@ -323,9 +427,9 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("➕ Создать автомобиль", callback_data="create_car")],
+                [InlineKeyboardButton("✏️ Редактировать", callback_data="cars_edit")],
                 [InlineKeyboardButton("⬅️ Назад", callback_data="menu")],
             ])
-            # важное: включаем Markdown, чтобы заголовок был жирным и эмодзи корректно отображались
             await query.edit_message_text(text, reply_markup=keyboard, parse_mode="Markdown")
 
         except Exception as e:
@@ -675,6 +779,46 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
         await menu_command(update, context)
         return
 
+    if context.user_data.get("action") == "edit_car":
+        step = context.user_data.get("step")
+        name = context.user_data.get("edit_car_name", "")
+        date_txt = (update.message.text or "").strip()
+
+        if step in ("edit_insurance", "edit_tech"):
+            # простая валидация даты
+            try:
+                try:
+                    d = datetime.datetime.strptime(date_txt, "%d.%m.%Y")
+                except ValueError:
+                    await update.message.reply_text("⚠️ Формат даты: ДД.ММ.ГГГГ")
+                    return
+
+                client = get_gspread_client()
+                ws = client.open_by_key(SPREADSHEET_ID).worksheet("Автомобили")
+
+                row_idx = _find_row_by_name(ws, name)
+                if not row_idx:
+                    await update.message.reply_text("🚫 Автомобиль не найден.")
+                    return
+
+                header = ws.row_values(1)
+                col_name = "Страховка до" if step == "edit_insurance" else "ТО до"
+                col_idx = header.index(col_name) + 1 if col_name in header else _ensure_column(ws, col_name)
+
+                ws.update_cell(row_idx, col_idx, date_txt)
+
+                context.user_data.pop("action", None)
+                context.user_data.pop("step", None)
+
+                kb = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅️ К редактированию", callback_data="cars_edit")],
+                    [InlineKeyboardButton("⬅️ К списку", callback_data="cars")],
+                ])
+                await update.message.reply_text(f"✅ Обновлено: {col_name} = {date_txt} для «{name}».", reply_markup=kb)
+            except Exception as e:
+                logger.error(f"edit insurance/tech error: {e}")
+                await update.message.reply_text("⚠️ Не удалось обновить.")
+            return
     # -------- Режим редактирования дат (страховки/ТО) --------
     if "edit_type" in context.user_data:
         edit_type = context.user_data.pop("edit_type")
