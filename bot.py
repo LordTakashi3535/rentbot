@@ -7,6 +7,37 @@ import datetime
 import re
 import asyncio
 
+def _parse_date_flex(s: str) -> datetime.date | None:
+    """Парсит 'ДД.ММ.ГГГГ' или 'ДД.ММ.ГГГГ ЧЧ:ММ'. Возвращает date или None."""
+    if not s:
+        return None
+    s = s.strip()
+    for fmt in ("%d.%m.%Y %H:%M", "%d.%m.%Y"):
+        try:
+            return datetime.datetime.strptime(s, fmt).date()
+        except ValueError:
+            pass
+    return None
+
+def _days_left_label(date_str: str) -> tuple[str, int | None]:
+    """
+    Возвращает метку 'осталось N дней' / 'сегодня' / 'просрочено N дней' и сам N (может быть <0),
+    либо ('—', None) если даты нет, либо ('неверный формат', None) если не распарсили.
+    """
+    if not date_str:
+        return "—", None
+    d = _parse_date_flex(date_str)
+    if not d:
+        return "неверный формат", None
+    today = datetime.date.today()
+    delta = (d - today).days
+    if delta > 0:
+        return f"осталось {delta} дней", delta
+    elif delta == 0:
+        return "сегодня", 0
+    else:
+        return f"просрочено {abs(delta)} дней", delta
+
 def _ensure_column(ws, header_name: str) -> int:
     """Вернёт индекс колонки по заголовку. Если нет — создаст новую справа и вернёт её индекс."""
     header = ws.row_values(1)
@@ -1128,55 +1159,73 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
             return    
 
 async def check_reminders(app):
+    """
+    Раз в сутки пробегает лист 'Автомобили' и шлёт напоминания по страховке и тех.осмотру.
+    Требуемые заголовки: 'Название', 'Страховка до', 'ТО до'.
+    Если заголовков нет — создадим автоматически.
+    """
+    REMIND_BEFORE_DAYS = 7  # оповещать за N дней
+
     while True:
         try:
             client = get_gspread_client()
-            now = datetime.datetime.now().date()
-            remind_before_days = 7
+            wb = client.open_by_key(SPREADSHEET_ID)
+            ws = wb.worksheet("Автомобили")
 
-            def check_sheet(sheet_name):
-                sheet = client.open_by_key(SPREADSHEET_ID).worksheet(sheet_name)
-                rows = sheet.get_all_values()[1:]  # пропускаем заголовок
-                reminders = []
-                for row in rows:
-                    if len(row) < 2:
-                        continue
-                    car = row[0].strip()
-                    date_str = row[1].strip()
-                    try:
-                        try:
-                            dt = datetime.datetime.strptime(date_str, "%d.%m.%Y %H:%M").date()
-                        except ValueError:
-                            dt = datetime.datetime.strptime(date_str, "%d.%m.%Y").date()
-                    except Exception:
-                        continue
-                    days_left = (dt - now).days
-                    if days_left <= remind_before_days:
-                        reminders.append((car, dt, days_left))
-                return reminders
+            # гарантируем наличие нужных колонок
+            header = ws.row_values(1)
+            if not header:
+                header = []
+            # обеспечим колонки (вернёт индекс 1-based)
+            col_idx_name = _ensure_column(ws, "Название")
+            col_idx_ins  = _ensure_column(ws, "Страховка до")
+            col_idx_tech = _ensure_column(ws, "ТО до")
 
-            insurance_reminders = check_sheet("Страховки")
-            tech_reminders = check_sheet("ТехОсмотры")
+            # берём все строки
+            rows = ws.get_all_values()
+            body = rows[1:] if len(rows) > 1 else []
 
-            for car, dt, days_left in insurance_reminders:
-                if days_left < 0:
-                    text = f"🚨 Страховка на *{car}* просрочена! Срочно оплатите и обновите дату."
-                else:
-                    text = f"⏰ Через {days_left} дней заканчивается страховка на *{car}* ({dt.strftime('%d.%m.%Y')})."
-                await app.bot.send_message(chat_id=REMINDER_CHAT_ID, text=text, parse_mode="Markdown")
+            today = datetime.date.today()
 
-            for car, dt, days_left in tech_reminders:
-                if days_left < 0:
-                    text = f"🚨 Тех.осмотр на *{car}* просрочен! Срочно пройдите тех.осмотр и обновите дату."
-                else:
-                    text = f"⏰ Через {days_left} дней заканчивается тех.осмотр на *{car}* ({dt.strftime('%d.%m.%Y')})."
-                await app.bot.send_message(chat_id=REMINDER_CHAT_ID, text=text, parse_mode="Markdown")
+            for r in body:
+                name = r[col_idx_name - 1].strip() if len(r) >= col_idx_name else ""
+                ins  = r[col_idx_ins  - 1].strip() if len(r) >= col_idx_ins  else ""
+                tech = r[col_idx_tech - 1].strip() if len(r) >= col_idx_tech else ""
+
+                # --- страховка ---
+                if ins:
+                    label, days = _days_left_label(ins)
+                    if days is not None:
+                        # отправляем, если просрочено / сегодня / в пределах окна
+                        if days < 0:
+                            msg = f"🚨 Страховка на *{name}* просрочена! ({ins}, {label})."
+                            await app.bot.send_message(chat_id=REMINDER_CHAT_ID, text=msg, parse_mode="Markdown")
+                        elif days == 0:
+                            msg = f"⏰ Сегодня истекает страховка на *{name}* ({ins})."
+                            await app.bot.send_message(chat_id=REMINDER_CHAT_ID, text=msg, parse_mode="Markdown")
+                        elif days <= REMIND_BEFORE_DAYS:
+                            msg = f"⏰ Через {days} дней истекает страховка на *{name}* ({ins})."
+                            await app.bot.send_message(chat_id=REMINDER_CHAT_ID, text=msg, parse_mode="Markdown")
+
+                # --- техосмотр ---
+                if tech:
+                    label, days = _days_left_label(tech)
+                    if days is not None:
+                        if days < 0:
+                            msg = f"🚨 Техосмотр на *{name}* просрочен! ({tech}, {label})."
+                            await app.bot.send_message(chat_id=REMINDER_CHAT_ID, text=msg, parse_mode="Markdown")
+                        elif days == 0:
+                            msg = f"⏰ Сегодня истекает техосмотр на *{name}* ({tech})."
+                            await app.bot.send_message(chat_id=REMINDER_CHAT_ID, text=msg, parse_mode="Markdown")
+                        elif days <= REMIND_BEFORE_DAYS:
+                            msg = f"⏰ Через {days} дней истекает техосмотр на *{name}* ({tech})."
+                            await app.bot.send_message(chat_id=REMINDER_CHAT_ID, text=msg, parse_mode="Markdown")
 
         except Exception as e:
             logger.error(f"Ошибка при проверке напоминаний: {e}")
 
-        await asyncio.sleep(86400)  # Ждем 24 часа
-
+        # спим 24 часа (можно уменьшить до 6–12, если хочешь чаще)
+        await asyncio.sleep(60)
 
 async def on_startup(app):
     asyncio.create_task(check_reminders(app))
