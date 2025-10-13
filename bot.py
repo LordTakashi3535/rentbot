@@ -30,6 +30,32 @@ def _find_row_by_name(ws, name: str, name_header: str = "Название") -> i
         if name_idx < len(r) and r[name_idx].strip() == name.strip():
             return i
     return None
+def _format_date_with_days(date_str: str) -> str:
+    """
+    "ДД.ММ.ГГГГ" или "ДД.ММ.ГГГГ ЧЧ:ММ" -> "ДД.ММ.ГГГГ (N дней)"
+    Пусто -> "—", ошибки -> "неверный формат".
+    """
+    if not date_str:
+        return "—"
+    s = date_str.strip()
+    try:
+        try:
+            dt = datetime.datetime.strptime(s, "%d.%m.%Y %H:%M")
+        except ValueError:
+            dt = datetime.datetime.strptime(s, "%d.%m.%Y")
+        d = dt.date()
+        today = datetime.date.today()
+        delta = (d - today).days
+        if delta > 0:
+            tail = f"({delta} дней)"
+        elif delta == 0:
+            tail = "(сегодня)"
+        else:
+            tail = f"(просрочено {abs(delta)} дней)"
+        return f"{d.strftime('%d.%m.%Y')} {tail}"
+    except Exception:
+        return "неверный формат"
+
 
 from decimal import Decimal, ROUND_HALF_UP
 
@@ -408,16 +434,15 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     vin   = g(r, "VIN") or "-"
                     plate = g(r, "Номер") or "-"
 
-                    # заглушки — позже подставим реальные даты/расчёт
-                    ins_left  = "—"
-                    tech_left = "—"
+                    ins_left  = _format_date_with_days(g(r, "Страховка до"))
+                    tech_left = _format_date_with_days(g(r, "ТО до"))
 
                     card = (
                         f"🚘 *{name}*\n"
                         f"🔑 _VIN:_ `{vin}`\n"
                         f"🔖 _Номер:_ `{plate}`\n"
-                        f"🛡️ _Страховка:_ —\n"
-                        f"🧰 _Техосмотр:_ —"
+                        f"🛡️ _Страховка:_ {ins_left}\n"
+                        f"🧰 _Техосмотр:_ {tech_left}"
                     )
                     cards.append(card)
 
