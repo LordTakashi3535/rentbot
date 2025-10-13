@@ -300,7 +300,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Ошибка списка авто: {e}")
             await query.message.reply_text("⚠️ Не удалось загрузить список.")
 
-     elif data == "create_car":
+    elif data == "create_car":
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("⬅️ Назад", callback_data="cars")],
             [InlineKeyboardButton("⬅️ Главное меню", callback_data="menu")],
