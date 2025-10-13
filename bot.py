@@ -281,8 +281,31 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("Введите сумму перевода:", reply_markup=cancel_keyboard())
 
     elif data == "cars":
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="menu")]])
-        await query.edit_message_text("🚗 Раздел «Автомобили»: в разработке.", reply_markup=kb)
+        try:
+            client = get_gspread_client()
+            ws = client.open_by_key(SPREADSHEET_ID).worksheet("Автомобили")
+            rows = ws.get_all_values()[1:]  # можно и без загрузки, если просто заглушка
+
+            text = "🚗 Автомобили:\n" + ("\n".join(
+                f"{i}) {r[1]} — {r[3]} — {_fmt_amount(_to_amount(r[4]))}/сутки"
+                for i, r in enumerate(rows, start=1) if len(r) >= 5
+            ) if rows else "Список пуст.")
+
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("➕ Создать автомобиль", callback_data="create_car")],
+                [InlineKeyboardButton("⬅️ Назад", callback_data="menu")],
+            ])
+            await query.edit_message_text(text, reply_markup=keyboard)
+        except Exception as e:
+            logger.error(f"Ошибка списка авто: {e}")
+            await query.message.reply_text("⚠️ Не удалось загрузить список.")
+
+     elif data == "create_car":
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ Назад", callback_data="cars")],
+            [InlineKeyboardButton("⬅️ Главное меню", callback_data="menu")],
+        ])
+        await query.edit_message_text("🛠 Создание автомобиля: в разработке.", reply_markup=kb)       
 
     elif data == "insurance":
         try:
