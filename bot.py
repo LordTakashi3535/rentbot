@@ -289,10 +289,10 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not rows or len(rows) < 2:
                 text = "🚗 Автомобили:\nСписок пуст."
             else:
-                header = rows[0]  # заголовки
+                header = rows[0]
                 body = rows[1:]
 
-                # Индексы колонок по заголовкам (работает, даже если порядок другой)
+                # Индексы колонок по заголовкам (порядок может быть любым)
                 idx = {name.strip(): i for i, name in enumerate(header)}
                 def g(row, key):
                     i = idx.get(key)
@@ -300,35 +300,19 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                 lines = []
                 for i, r in enumerate(body, start=1):
-                    name     = g(r, "Название") or "-"
-                    vin      = g(r, "VIN") or "-"
-                    plate    = g(r, "Номер") or "-"
-                    status   = g(r, "Статус") or "-"
-                    price    = g(r, "Сутки") or ""
-                    deposit  = g(r, "Залог") or ""
-                    mileage  = g(r, "Пробег") or ""
-                    comment  = g(r, "Комментарий") or ""
+                    name  = g(r, "Название") or "-"
+                    vin   = g(r, "VIN") or "-"
+                    plate = g(r, "Номер") or "-"
 
-                    # Красивое форматирование чисел, если они есть
-                    try:
-                        price_fmt = _fmt_amount(_to_amount(price)) if price else "-"
-                    except Exception:
-                        price_fmt = price or "-"
-                    try:
-                        dep_fmt = _fmt_amount(_to_amount(deposit)) if deposit else "-"
-                    except Exception:
-                        dep_fmt = deposit or "-"
+                    # Заглушки — позже подставим реальные расчёты/даты из этого же листа
+                    ins_left  = "—"   # Страховка: осталось дней
+                    tech_left = "—"   # Техосмотр: осталось дней
 
-                    block = (
+                    lines.append(
                         f"{i}) {name}\n"
                         f"   VIN: {vin} | №: {plate}\n"
-                        f"   Статус: {status}\n"
-                        f"   Сутки: {price_fmt} | Залог: {dep_fmt}\n"
-                        f"   Пробег: {mileage}\n"
-                        f"   Комментарий: {comment}"
-                    ).rstrip()
-
-                    lines.append(block)
+                        f"   Страховка: {ins_left} | Техосмотр: {tech_left}"
+                    )
 
                 text = "🚗 Автомобили:\n" + "\n\n".join(lines)
 
@@ -341,7 +325,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Ошибка списка авто: {e}")
             await query.message.reply_text("⚠️ Не удалось загрузить список «Автомобили».")
-            
+
     elif data == "insurance":
         try:
             sheet = get_gspread_client().open_by_key(SPREADSHEET_ID).worksheet("Страховки")
