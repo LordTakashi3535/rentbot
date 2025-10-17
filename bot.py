@@ -339,18 +339,122 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     elif data.startswith("editcar_select|"):
-        # выбрали конкретную машину — показываем, что редактировать
         name = data.split("|", 1)[1]
         context.user_data["edit_car_name"] = name
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🛡️ Страховка", callback_data="editcar_field|insurance")],
-            [InlineKeyboardButton("🧰 Техосмотр", callback_data="editcar_field|tech")],
-            [InlineKeyboardButton("👤 Добавить водителя", callback_data="editcar_driver")],
-            [InlineKeyboardButton("🗑 Удалить машину", callback_data="editcar_delete_confirm")],
-            [InlineKeyboardButton("⬅️ Назад", callback_data="cars_edit")],
-        ])
-        await query.edit_message_text(f"🚘 {name}\nЧто редактировать?", reply_markup=kb)
+
+        try:
+            client = get_gspread_client()
+            ws = client.open_by_key(SPREADSHEET_ID).worksheet("Автомобили")
+
+            row_idx = _find_row_by_name(ws, name)
+            if not row_idx:
+                await query.edit_message_text(
+                    "🚫 Автомобиль не найден.",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="cars_edit")]])
+                )
+                return
+
+            header = ws.row_values(1)
+            row    = ws.row_values(row_idx)
+
+            def get_col(label: str) -> str:
+                return row[header.index(label)].strip() if label in header and header.index(label) < len(row) else ""
+
+            vin          = get_col("VIN")
+            plate        = get_col("Номер")
+            driver       = get_col("Водитель") or "—"
+            driver_phone = get_col("Телефон водителя") or "—"
+            contract     = get_col("Договор до")
+            contract_fmt = _format_date_with_days(contract) if contract else "—"
+
+            text = (
+                f"🚘 *{name}*\n"
+                f"🔑 _VIN:_ `{vin}`\n"
+                f"🔖 _Номер:_ `{plate}`\n"
+                f"👤 _Водитель:_ {driver}\n"
+                f"📞 _Телефон:_ {driver_phone}\n"
+                f"📃 _Договор:_ {contract_fmt}\n\n"
+                "Что редактировать?"
+            )
+
+            # если есть хотя бы одно поле водителя — показываем «Сменить водителя», иначе «Добавить»
+            has_driver = (driver != "—") or (driver_phone != "—") or bool(contract)
+            driver_btn = (
+                [InlineKeyboardButton("🔁 Сменить водителя", callback_data="editcar_driver_menu")]
+                if has_driver else
+                [InlineKeyboardButton("👤 Добавить водителя", callback_data="editcar_driver")]
+            )
+
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🛡️ Страховка", callback_data="editcar_field|insurance")],
+                [InlineKeyboardButton("🧰 Техосмотр", callback_data="editcar_field|tech")],
+                driver_btn,
+                [InlineKeyboardButton("🗑 Удалить машину", callback_data="editcar_delete_confirm")],
+                [InlineKeyboardButton("⬅️ Назад", callback_data="cars_edit")],
+            ])
+            await query.edit_message_text(text, reply_markup=kb, parse_mode="Markdown")
+        except Exception as e:
+            logger.error(f"editcar_select fetch error: {e}")
+            await query.message.reply_text("⚠️ Не удалось загрузить данные авто.")
         return
+
+    elif data == "editcar_driver_menu":
+        # показываем меню действий с текущим водителем
+        name = context.user_data.get("edit_car_name", "")
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔁 Сменить водителя", callback_data="editcar_driver_change")],
+            [InlineKeyboardButton("🗑 Удалить водителя", callback_data="editcar_driver_delete_confirm")],
+            [InlineKeyboardButton("⬅️ Назад", callback_data=f"editcar_select|{name}")],
+        ])
+        await query.edit_message_text(f"🚘 {name}\nЧто сделать с водителем?", reply_markup=kb)
+        return
+
+    elif data == "editcar_driver_change":
+        # запускаем тот же мастер (имя → телефон → дата)
+        name = context.user_data.get("edit_car_name", "")
+        context.user_data["action"] = "edit_car"
+        context.user_data["step"] = "edit_driver_name"
+        await query.edit_message_text(
+            f"🚘 {name}\nВведите имя нового водителя:", reply_markup=cancel_keyboard()
+        )
+        return
+
+    elif data == "editcar_driver_delete_confirm":
+        name = context.user_data.get("edit_car_name", "")
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Да, удалить водителя", callback_data="editcar_driver_delete_yes")],
+            [InlineKeyboardButton("⬅️ Отмена", callback_data=f"editcar_select|{name}")],
+        ])
+        await query.edit_message_text(f"Удалить водителя у «{name}»? Будут очищены имя, телефон и дата договора.", reply_markup=kb)
+        return
+
+    elif data == "editcar_driver_delete_yes":
+        try:
+            client = get_gspread_client()
+            ws = client.open_by_key(SPREADSHEET_ID).worksheet("Автомобили")
+            name = context.user_data.get("edit_car_name", "")
+            row_idx = _find_row_by_name(ws, name)
+            if not row_idx:
+                await query.edit_message_text("🚫 Автомобиль не найден.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="cars_edit")]]))
+                return
+
+            col_driver        = _ensure_column(ws, "Водитель")
+            col_driver_phone  = _ensure_column(ws, "Телефон водителя")
+            col_contract_till = _ensure_column(ws, "Договор до")
+
+            ws.update_cell(row_idx, col_driver,        "")
+            ws.update_cell(row_idx, col_driver_phone,  "")
+            ws.update_cell(row_idx, col_contract_till, "")
+
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ К редактированию", callback_data="cars_edit")],
+                [InlineKeyboardButton("⬅️ К списку", callback_data="cars")],
+            ])
+            await query.edit_message_text("✅ Водитель удалён (имя, телефон, договор очищены).", reply_markup=kb)
+        except Exception as e:
+            logger.error(f"delete driver error: {e}")
+            await query.message.reply_text("⚠️ Не удалось удалить водителя.")
+        return    
 
     elif data.startswith("editcar_field|"):
         field = data.split("|", 1)[1]   # insurance | tech
