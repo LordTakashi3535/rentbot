@@ -840,7 +840,6 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
                                             reply_markup=cancel_keyboard())
             return
 
-        # 3.3 Дата окончания договора
         if step == "edit_driver_contract":
             try:
                 datetime.datetime.strptime(txt, "%d.%m.%Y")
@@ -856,16 +855,22 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
                     await update.message.reply_text("🚫 Автомобиль не найден.")
                     return
 
-                # гарантируем колонки и обновляем значения
+                # гарантируем колонки
                 col_driver        = _ensure_column(ws, "Водитель")
                 col_driver_phone  = _ensure_column(ws, "Телефон водителя")
                 col_contract_till = _ensure_column(ws, "Договор до")
 
-                ws.update_cell(row_idx, col_driver,        context.user_data.get("driver_name", ""))
-                ws.update_cell(row_idx, col_driver_phone,  context.user_data.get("driver_phone", ""))
-                ws.update_cell(row_idx, col_contract_till, txt)
+                # Сохраним локально ПРЕЖДЕ чем чистить user_data
+                driver_name  = context.user_data.get("driver_name", "")
+                driver_phone = context.user_data.get("driver_phone", "")
+                contract_till = txt
 
-                # очистка состояния
+                # Запись в таблицу
+                ws.update_cell(row_idx, col_driver,        driver_name)
+                ws.update_cell(row_idx, col_driver_phone,  driver_phone)
+                ws.update_cell(row_idx, col_contract_till, contract_till)
+
+                # Очистка состояния
                 context.user_data.pop("action", None)
                 context.user_data.pop("step", None)
                 context.user_data.pop("driver_name", None)
@@ -875,18 +880,19 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
                     [InlineKeyboardButton("⬅️ К редактированию", callback_data="cars_edit")],
                     [InlineKeyboardButton("⬅️ К списку", callback_data="cars")],
                 ])
-                pretty = _format_date_with_days(txt)
+                pretty = _format_date_with_days(contract_till)
                 await update.message.reply_text(
-                    f"✅ Водитель добавлен для «{car_name}»:\n"
-                    f"👤 {context.user_data.get('driver_name', '')}\n"
-                    f"📞 {context.user_data.get('driver_phone', '')}\n"
+                    "✅ Водитель добавлен:\n"
+                    f"👤 {driver_name}\n"
+                    f"📞 {driver_phone}\n"
                     f"📃 Договор: {pretty}",
-                    reply_markup=kb
+                    reply_markup=kb,
+                    parse_mode="Markdown"
                 )
             except Exception as e:
                 logger.error(f"edit driver error: {e}")
                 await update.message.reply_text("⚠️ Не удалось обновить данные водителя.")
-            return    
+            return
 
     # -------- Шаг ввода суммы --------
     if step == "amount":
