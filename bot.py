@@ -345,6 +345,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("🛡️ Страховка", callback_data="editcar_field|insurance")],
             [InlineKeyboardButton("🧰 Техосмотр", callback_data="editcar_field|tech")],
+            [InlineKeyboardButton("👤 Добавить водителя", callback_data="editcar_driver")],
             [InlineKeyboardButton("🗑 Удалить машину", callback_data="editcar_delete_confirm")],
             [InlineKeyboardButton("⬅️ Назад", callback_data="cars_edit")],
         ])
@@ -383,7 +384,18 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"delete car error: {e}")
             await query.message.reply_text("⚠️ Не удалось удалить.")
-        return    
+        return   
+
+    elif data == "editcar_driver":
+        # старт мастера добавления водителя
+        name = context.user_data.get("edit_car_name", "")
+        context.user_data["action"] = "edit_car"
+        context.user_data["step"] = "edit_driver_name"
+        await query.edit_message_text(
+            f"🚘 {name}\nВведите имя водителя:",
+            reply_markup=cancel_keyboard()
+        )
+        return     
 
     elif data in ["cat_franky", "cat_fraiz", "cat_other"]:
         category_map = {
@@ -456,17 +468,23 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                     ins_left  = _format_date_with_days(g(r, "Страховка до"))
                     tech_left = _format_date_with_days(g(r, "ТО до"))
+                    driver = g(r, "Водитель") or "—"
+                    driver_phone = g(r, "Телефон водителя") or "—"
+                    contract_str = _format_date_with_days(g(r, "Договор до"))  # 12.11.2025 (30 дней)
 
                     card = (
                         f"🚘 *{name}*\n"
                         f"🔑 _VIN:_ `{vin}`\n"
                         f"🔖 _Номер:_ `{plate}`\n"
-                        f"🛡️ _Страховка:_ {ins_left}\n"
-                        f"🧰 _Техосмотр:_ {tech_left}"
+                        f"🛡️ _Страховка:_ {_format_date_with_days(g(r, 'Страховка до'))}\n"
+                        f"🧰 _Техосмотр:_ {_format_date_with_days(g(r, 'ТО до'))}\n"
+                        f"👤 _Водитель:_ {driver}\n"
+                        f"📞 _Телефон:_ {driver_phone}\n"
+                        f"📃 _Договор:_ {contract_str}"
                     )
                     cards.append(card)
 
-                separator = "─" * 15  # ← длина линии (поменяй на сколько хочешь)
+                separator = "─" * 35  # ← длина линии (поменяй на сколько хочешь)
                 text = "🚗 *Автомобили:*\n\n" + f"\n{separator}\n".join(cards)
 
 
@@ -792,6 +810,84 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
     if not action or not step:
         return
 
+    # === Редактирование авто: добавление водителя ===
+    if context.user_data.get("action") == "edit_car":
+        step = context.user_data.get("step")
+        car_name = context.user_data.get("edit_car_name", "")
+        txt = (update.message.text or "").strip()
+
+        # 3.1 Имя водителя
+        if step == "edit_driver_name":
+            if not txt:
+                await update.message.reply_text("⚠️ Введите имя водителя.")
+                return
+            context.user_data["driver_name"] = txt
+            context.user_data["step"] = "edit_driver_phone"
+            await update.message.reply_text("Введите номер телефона водителя (например: +48 600 000 000):",
+                                            reply_markup=cancel_keyboard())
+            return
+
+        # 3.2 Телефон водителя
+        if step == "edit_driver_phone":
+            phone = txt
+            # мягкая валидация (опционально, можно упростить)
+            if len(phone) < 6:
+                await update.message.reply_text("⚠️ Слишком короткий телефон. Попробуйте снова.")
+                return
+            context.user_data["driver_phone"] = phone
+            context.user_data["step"] = "edit_driver_contract"
+            await update.message.reply_text("Введите дату окончания договора (ДД.ММ.ГГГГ):",
+                                            reply_markup=cancel_keyboard())
+            return
+
+        # 3.3 Дата окончания договора
+        if step == "edit_driver_contract":
+            try:
+                datetime.datetime.strptime(txt, "%d.%m.%Y")
+            except ValueError:
+                await update.message.reply_text("⚠️ Формат даты: ДД.ММ.ГГГГ")
+                return
+
+            try:
+                client = get_gspread_client()
+                ws = client.open_by_key(SPREADSHEET_ID).worksheet("Автомобили")
+                row_idx = _find_row_by_name(ws, car_name)
+                if not row_idx:
+                    await update.message.reply_text("🚫 Автомобиль не найден.")
+                    return
+
+                # гарантируем колонки и обновляем значения
+                col_driver        = _ensure_column(ws, "Водитель")
+                col_driver_phone  = _ensure_column(ws, "Телефон водителя")
+                col_contract_till = _ensure_column(ws, "Договор до")
+
+                ws.update_cell(row_idx, col_driver,        context.user_data.get("driver_name", ""))
+                ws.update_cell(row_idx, col_driver_phone,  context.user_data.get("driver_phone", ""))
+                ws.update_cell(row_idx, col_contract_till, txt)
+
+                # очистка состояния
+                context.user_data.pop("action", None)
+                context.user_data.pop("step", None)
+                context.user_data.pop("driver_name", None)
+                context.user_data.pop("driver_phone", None)
+
+                kb = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅️ К редактированию", callback_data="cars_edit")],
+                    [InlineKeyboardButton("⬅️ К списку", callback_data="cars")],
+                ])
+                pretty = _format_date_with_days(txt)
+                await update.message.reply_text(
+                    f"✅ Водитель добавлен для «{car_name}»:\n"
+                    f"👤 {context.user_data.get('driver_name', '')}\n"
+                    f"📞 {context.user_data.get('driver_phone', '')}\n"
+                    f"📃 Договор: {pretty}",
+                    reply_markup=kb
+                )
+            except Exception as e:
+                logger.error(f"edit driver error: {e}")
+                await update.message.reply_text("⚠️ Не удалось обновить данные водителя.")
+            return    
+
     # -------- Шаг ввода суммы --------
     if step == "amount":
         try:
@@ -1067,6 +1163,7 @@ async def check_reminders(app):
             col_idx_name = _ensure_column(ws, "Название")
             col_idx_ins  = _ensure_column(ws, "Страховка до")
             col_idx_tech = _ensure_column(ws, "ТО до")
+            col_idx_contract = _ensure_column(ws, "Договор до")
 
             # берём все строки
             rows = ws.get_all_values()
@@ -1078,6 +1175,7 @@ async def check_reminders(app):
                 name = r[col_idx_name - 1].strip() if len(r) >= col_idx_name else ""
                 ins  = r[col_idx_ins  - 1].strip() if len(r) >= col_idx_ins  else ""
                 tech = r[col_idx_tech - 1].strip() if len(r) >= col_idx_tech else ""
+                contract = r[col_idx_contract - 1].strip() if len(r) >= col_idx_contract else ""
 
                 # --- страховка ---
                 if ins:
@@ -1108,6 +1206,28 @@ async def check_reminders(app):
                             msg = f"⏰ Через {days} дней истекает техосмотр на *{name}* ({tech})."
                             await app.bot.send_message(chat_id=REMINDER_CHAT_ID, text=msg, parse_mode="Markdown")
 
+                if contract:
+                    label, days = _days_left_label(contract)
+                    if days is not None:
+                        if days < 0:
+                            msg = (
+                                f"📃🤝 *Договор аренды* по *{name}* истёк!\n"
+                                f"⏱ Был до: {contract} ({label})."
+                            )
+                            await app.bot.send_message(chat_id=REMINDER_CHAT_ID, text=msg, parse_mode="Markdown")
+                        elif days == 0:
+                            msg = (
+                                f"📃🤝 Сегодня истекает *договор аренды* по *{name}*.\n"
+                                f"⏱ Дата: {contract}."
+                            )
+                            await app.bot.send_message(chat_id=REMINDER_CHAT_ID, text=msg, parse_mode="Markdown")
+                        elif days <= REMIND_BEFORE_DAYS:
+                            msg = (
+                                f"📃🤝 Через {days} дней истекает *договор аренды* по *{name}*.\n"
+                                f"⏱ До: {contract}."
+                            )
+                            await app.bot.send_message(chat_id=REMINDER_CHAT_ID, text=msg, parse_mode="Markdown")
+     
         except Exception as e:
             logger.error(f"Ошибка при проверке напоминаний: {e}")
 
