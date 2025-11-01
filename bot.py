@@ -8,6 +8,7 @@ import re
 import asyncio
 
 # === Dynamic Categories & Records ===
+from typing import Optional, Union, List, Dict, Tuple
 from datetime import datetime
 
 INCOME_SHEET = "Доход"    # если назвал лист иначе — поменяй тут
@@ -115,7 +116,7 @@ def append_expense(category_id: str, category_name: str, card_amount: float, cas
         datetime.now().strftime("%d.%m.%Y %H:%M"),
         category_id, category_name, _fmt_amount(card_amount), _fmt_amount(cash_amount), desc or "-",
     ])
-def _parse_date_flex(s: str) -> datetime.date | None:
+def _parse_date_flex(s: str) -> Optional[date]:
     """Парсит 'ДД.ММ.ГГГГ' или 'ДД.ММ.ГГГГ ЧЧ:ММ'. Возвращает date или None."""
     if not s:
         return None
