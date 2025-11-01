@@ -7,6 +7,114 @@ import datetime
 import re
 import asyncio
 
+# === Dynamic Categories & Records ===
+from datetime import datetime
+
+INCOME_SHEET = "Доход"    # если назвал лист иначе — поменяй тут
+EXPENSE_SHEET = "Расход"  # если назвал лист иначе — поменяй тут
+
+def get_cats_ws(client):
+    return client.open_by_key(SPREADSHEET_ID).worksheet("Категории")
+    
+def _parse_money(s: str) -> float:
+    s = (s or "").strip().replace(",", ".")
+    return float(s) if s else 0.0
+
+def list_categories(kind: str):
+    """Активные категории ('Доход'/'Расход') -> [{ID, Название, Порядок}]"""
+    client = get_gspread_client()
+    ws = get_cats_ws(client)
+    rows = ws.get_all_values()
+    if not rows or len(rows) < 2:
+        return []
+    header = rows[0]
+    idx = {h.strip(): i for i, h in enumerate(header)}
+    out = []
+    for r in rows[1:]:
+        if not r: 
+            continue
+        if not all(k in idx for k in ("ID","Тип","Название","Активна")):
+            continue
+        if any(idx[k] >= len(r) for k in ("ID","Тип","Название","Активна")):
+            continue
+        if r[idx["Тип"]].strip() != kind:
+            continue
+        if r[idx["Активна"]].strip() != "1":
+            continue
+        order = 0
+        if "Порядок" in idx and idx["Порядок"] < len(r):
+            s = (r[idx["Порядок"]] or "").strip()
+            if s and s.lstrip("-").isdigit():
+                order = int(s)
+        out.append({"ID": r[idx["ID"]].strip(), "Название": r[idx["Название"]].strip(), "Порядок": order})
+    out.sort(key=lambda x: (x["Порядок"], x["Название"].lower()))
+    return out
+
+def get_category_name(cat_id: str) -> str:
+    client = get_gspread_client()
+    ws = get_cats_ws(client)
+    rows = ws.get_all_values()
+    if not rows: 
+        return cat_id
+    header = rows[0]
+    idx = {h.strip(): i for i, h in enumerate(header)}
+    if "ID" not in idx:
+        return cat_id
+    for r in rows[1:]:
+        if idx["ID"] < len(r) and (r[idx["ID"]] or "").strip() == cat_id:
+            if "Название" in idx and idx["Название"] < len(r):
+                nm = (r[idx["Название"]] or "").strip()
+                return nm or cat_id
+            return cat_id
+    return cat_id
+
+def add_category(kind: str, name: str) -> str:
+    """Создать категорию (Активна=1, Порядок=0). Возвращает cat_id."""
+    client = get_gspread_client()
+    ws = get_cats_ws(client)
+    rows = ws.get_all_values()
+    if not rows:
+        ws.append_row(["ID","Тип","Название","Активна","Порядок"])
+    cat_id = "cat_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+    ws.append_row([cat_id, kind.strip(), name.strip(), "1", "0"])
+    return cat_id
+
+def ensure_default_category(kind: str) -> tuple[str, str]:
+    """Гарантируем активную категорию 'Другое' для указанного типа."""
+    cats = list_categories(kind)
+    for c in cats:
+        if c["Название"].strip().lower() == "другое":
+            return c["ID"], c["Название"]
+    cat_id = add_category(kind, "Другое")
+    return cat_id, "Другое"
+
+# ---- листы Доход/Расход со столбцами: Дата | КатегорияID | Категория | 💳 Карта | 💵 Наличные | 📝 Описание
+INOUT_HEADERS = ["Дата", "КатегорияID", "Категория", "💳 Карта", "💵 Наличные", "📝 Описание"]
+
+def ensure_sheet_headers(ws, headers: list[str]):
+    rows = ws.get_all_values()
+    if not rows:
+        ws.append_row(headers)
+
+def _fmt_amount(x): return f"{float(x):.2f}"
+
+def append_income(category_id: str, category_name: str, card_amount: float, cash_amount: float, desc: str):
+    client = get_gspread_client()
+    ws = client.open_by_key(SPREADSHEET_ID).worksheet(INCOME_SHEET)
+    ensure_sheet_headers(ws, INOUT_HEADERS)
+    ws.append_row([
+        datetime.now().strftime("%d.%m.%Y %H:%M"),
+        category_id, category_name, _fmt_amount(card_amount), _fmt_amount(cash_amount), desc or "-",
+    ])
+
+def append_expense(category_id: str, category_name: str, card_amount: float, cash_amount: float, desc: str):
+    client = get_gspread_client()
+    ws = client.open_by_key(SPREADSHEET_ID).worksheet(EXPENSE_SHEET)
+    ensure_sheet_headers(ws, INOUT_HEADERS)
+    ws.append_row([
+        datetime.now().strftime("%d.%m.%Y %H:%M"),
+        category_id, category_name, _fmt_amount(card_amount), _fmt_amount(cash_amount), desc or "-",
+    ])
 def _parse_date_flex(s: str) -> datetime.date | None:
     """Парсит 'ДД.ММ.ГГГГ' или 'ДД.ММ.ГГГГ ЧЧ:ММ'. Возвращает date или None."""
     if not s:
@@ -17,7 +125,7 @@ def _parse_date_flex(s: str) -> datetime.date | None:
             return datetime.datetime.strptime(s, fmt).date()
         except ValueError:
             pass
-    return None
+    return None    
 
 def _days_left_label(date_str: str) -> tuple[str, int | None]:
     """
@@ -265,13 +373,30 @@ def persistent_menu_keyboard():
         one_time_keyboard=False,
     )
 
+async def _show_categories_view(query, kind: str):
+    cats = list_categories(kind)
+    if not cats:
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("➕ Добавить категорию", callback_data=f"cat_add|{kind}")],
+            [InlineKeyboardButton("⬅️ Назад", callback_data="menu")],
+        ])
+        await query.edit_message_text(f"Нет категорий для {kind.lower()}а.", reply_markup=kb)
+        return
+    cbp = "income_cat" if kind == "Доход" else "expense_cat"
+    buttons = [[InlineKeyboardButton(c["Название"], callback_data=f"{cbp}|{c['ID']}")] for c in cats]
+    buttons.append([InlineKeyboardButton("➕ Добавить категорию", callback_data=f"cat_add|{kind}")])
+    buttons.append([InlineKeyboardButton("⬅️ Назад", callback_data="menu")])
+    await query.edit_message_text(
+        f"{'📥' if kind=='Доход' else '📤'} Категории {kind.lower()}:",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
 
 # Показываем меню (inline кнопки) и добавляем кнопку "Меню" под полем ввода
 async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     inline_keyboard = InlineKeyboardMarkup([
     [InlineKeyboardButton("📊 Баланс", callback_data="balance")],
-    [InlineKeyboardButton("📥 Доход", callback_data="add_income"),
-     InlineKeyboardButton("📤 Расход", callback_data="add_expense")],
+    [InlineKeyboardButton("📥 Доход", callback_data="income"),
+     InlineKeyboardButton("📤 Расход", callback_data="expense")],
     [InlineKeyboardButton("🔁 Перевод", callback_data="transfer"),
      InlineKeyboardButton("🚗 Автомобили", callback_data="cars")],
     [InlineKeyboardButton("📈 Отчёт 7 дней", callback_data="report_7"),
@@ -303,18 +428,65 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await menu_command(update, context)
         return
 
-    if data == "add_income":
+    elif data == "income":
+    cats = list_categories("Доход")
+    if not cats:
+        cat_id, cat_name = ensure_default_category("Доход")
         context.user_data.clear()
-        context.user_data["action"] = "income_category"
-        keyboard = InlineKeyboardMarkup(
-            [
-                [InlineKeyboardButton("Franky", callback_data="cat_franky")],
-                [InlineKeyboardButton("Fraiz", callback_data="cat_fraiz")],
-                [InlineKeyboardButton("Другое", callback_data="cat_other")],
-                [InlineKeyboardButton("❌ Отмена", callback_data="cancel")],
-            ]
-        )
-        await query.edit_message_text("Выберите категорию дохода:", reply_markup=keyboard)
+        context.user_data["flow"] = "income"
+        context.user_data["category_id"] = cat_id
+        context.user_data["category"] = cat_name
+        context.user_data["step"] = "amount_card"
+        await query.edit_message_text("Категорий нет. Использую *Другое*.\nВведите сумму *по карте* (0 если нет):",
+                                      parse_mode="Markdown")
+        return
+    await _show_categories_view(query, "Доход")
+    return
+
+    elif data == "expense":
+        cats = list_categories("Расход")
+        if not cats:
+            cat_id, cat_name = ensure_default_category("Расход")
+            context.user_data.clear()
+            context.user_data["flow"] = "expense"
+            context.user_data["category_id"] = cat_id
+            context.user_data["category"] = cat_name
+            context.user_data["step"] = "amount_card"
+            await query.edit_message_text("Категорий нет. Использую *Другое*.\nВведите сумму *по карте* (0 если нет):",
+                                        parse_mode="Markdown")
+            return
+        await _show_categories_view(query, "Расход")
+        return
+
+    elif data.startswith("income_cat|"):
+        cat_id = data.split("|", 1)[1]
+        cat_name = get_category_name(cat_id)
+        context.user_data.clear()
+        context.user_data["flow"] = "income"
+        context.user_data["category_id"] = cat_id
+        context.user_data["category"] = cat_name
+        context.user_data["step"] = "amount_card"
+        await query.edit_message_text("Введите сумму *по карте* (0 если нет):", parse_mode="Markdown")
+        return
+
+    elif data.startswith("expense_cat|"):
+        cat_id = data.split("|", 1)[1]
+        cat_name = get_category_name(cat_id)
+        context.user_data.clear()
+        context.user_data["flow"] = "expense"
+        context.user_data["category_id"] = cat_id
+        context.user_data["category"] = cat_name
+        context.user_data["step"] = "amount_card"
+        await query.edit_message_text("Введите сумму *по карте* (0 если нет):", parse_mode="Markdown")
+        return
+
+    elif data.startswith("cat_add|"):
+        kind = data.split("|",1)[1]  # "Доход" или "Расход"
+        context.user_data.clear()
+        context.user_data["action"] = "cat_add"
+        context.user_data["kind"] = kind
+        await query.edit_message_text(f"Введите название новой категории для {kind.lower()}:", reply_markup=cancel_keyboard())
+        return
 
     elif data == "cars_edit":
         # список всех машин по названию
@@ -545,32 +717,18 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return     
 
-    elif data in ["cat_franky", "cat_fraiz", "cat_other"]:
-        category_map = {
-            "cat_franky": "Franky",
-            "cat_fraiz": "Fraiz",
-            "cat_other": "Другое",
-        }
-        context.user_data["action"] = "income"
-        context.user_data["category"] = category_map[data]
-        context.user_data["step"] = "amount"
-        await query.edit_message_text("Введите сумму дохода:", reply_markup=cancel_keyboard())
-
-    elif data == "add_expense":
-        context.user_data.clear()
-        context.user_data["action"] = "expense"
-        context.user_data["step"] = "amount"
-        await query.edit_message_text("Введите сумму расхода:", reply_markup=cancel_keyboard())
-
     elif data == "source_card":
         context.user_data["source"] = "Карта"
         context.user_data["step"] = "description"
-        await query.edit_message_text("Введите описание:")
+        await query.edit_message_text("Добавьте описание (или '-' если без описания):")
+        return
 
     elif data == "source_cash":
         context.user_data["source"] = "Наличные"
         context.user_data["step"] = "description"
-        await query.edit_message_text("Введите описание:")
+        await query.edit_message_text("Добавьте описание (или '-' если без описания):")
+        return
+
 
     elif data == "transfer":
         # Start transfer flow: ask direction
@@ -686,8 +844,8 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keyboard = InlineKeyboardMarkup(
                 [
                     [
-                        InlineKeyboardButton("📥 Доход", callback_data="add_income"),
-                        InlineKeyboardButton("📤 Расход", callback_data="add_expense"),
+                        InlineKeyboardButton("📥 Доход", callback_data="income"),
+                        InlineKeyboardButton("📤 Расход", callback_data="expense"),
                     ],
                     [InlineKeyboardButton("⬅️ Назад", callback_data="menu")],
                 ]
@@ -886,6 +1044,124 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
         context.user_data.clear()
         await update.message.reply_text("❌ Отменено.")
         await menu_command(update, context)
+        return
+
+    # --- Добавление категории из UI ---
+    if context.user_data.get("action") == "cat_add":
+        kind = context.user_data.get("kind")
+        name = (update.message.text or "").strip()
+        if not name:
+            await update.message.reply_text("❌ Название не может быть пустым. Введите ещё раз:")
+            return
+        try:
+            add_category(kind, name)
+            context.user_data.clear()
+            await update.message.reply_text(f"✅ Категория добавлена: {name}")
+        except Exception as e:
+            logger.error(f"cat_add error: {e}")
+            await update.message.reply_text("⚠️ Не удалось добавить категорию. Проверь лист 'Категории'.")
+        return
+
+    # --- ДОХОД: карта -> наличные -> описание -> запись ---
+    if context.user_data.get("flow") == "income" and context.user_data.get("step") == "amount_card":
+        try:
+            card_amt = _parse_money(update.message.text)
+        except Exception:
+            await update.message.reply_text("❌ Введите число для суммы по *карте* (например 123.45).", parse_mode="Markdown")
+            return
+        context.user_data["card_amt"] = card_amt
+        context.user_data["step"] = "amount_cash"
+        await update.message.reply_text("Введите сумму *наличными* (0 если нет):", parse_mode="Markdown")
+        return
+
+    if context.user_data.get("flow") == "income" and context.user_data.get("step") == "amount_cash":
+        try:
+            cash_amt = _parse_money(update.message.text)
+        except Exception:
+            await update.message.reply_text("❌ Введите число для суммы *наличными* (например 50).", parse_mode="Markdown")
+            return
+        context.user_data["cash_amt"] = cash_amt
+        context.user_data["step"] = "desc"
+        await update.message.reply_text("Добавьте описание (или '-' если без описания):")
+        return
+
+    if context.user_data.get("flow") == "income" and context.user_data.get("step") == "desc":
+        desc = (update.message.text or "").strip() or "-"
+        cat_id = context.user_data.get("category_id")
+        cat_nm = context.user_data.get("category")
+        card_amt = float(context.user_data.get("card_amt", 0.0))
+        cash_amt = float(context.user_data.get("cash_amt", 0.0))
+        try:
+            append_income(cat_id, cat_nm, card_amt, cash_amt, desc)
+            total = card_amt + cash_amt
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("➕ Ещё доход", callback_data="income")],
+                [InlineKeyboardButton("⬅️ В меню",    callback_data="menu")],
+            ])
+            msg = (
+                f"✅ Доход добавлен:\n"
+                f"Категория: *{cat_nm}*\n"
+                f"💳 Карта: {card_amt:.2f}\n"
+                f"💵 Наличные: {cash_amt:.2f}\n"
+                f"Итого: *{total:.2f}*\n"
+                f"📝 {desc}"
+            )
+            await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=kb)
+        except Exception as e:
+            logger.error(f"append_income error: {e}")
+            await update.message.reply_text("⚠️ Не удалось сохранить доход. Проверь лист 'Доход'.")
+        context.user_data.clear()
+        return
+
+    # --- РАСХОД: карта -> наличные -> описание -> запись ---
+    if context.user_data.get("flow") == "expense" and context.user_data.get("step") == "amount_card":
+        try:
+            card_amt = _parse_money(update.message.text)
+        except Exception:
+            await update.message.reply_text("❌ Введите число для суммы по *карте* (например 99.99).", parse_mode="Markdown")
+            return
+        context.user_data["card_amt"] = card_amt
+        context.user_data["step"] = "amount_cash"
+        await update.message.reply_text("Введите сумму *наличными* (0 если нет):", parse_mode="Markdown")
+        return
+
+    if context.user_data.get("flow") == "expense" and context.user_data.get("step") == "amount_cash":
+        try:
+            cash_amt = _parse_money(update.message.text)
+        except Exception:
+            await update.message.reply_text("❌ Введите число для суммы *наличными* (например 15).", parse_mode="Markdown")
+            return
+        context.user_data["cash_amt"] = cash_amt
+        context.user_data["step"] = "desc"
+        await update.message.reply_text("Добавьте описание (или '-' если без описания):")
+        return
+
+    if context.user_data.get("flow") == "expense" and context.user_data.get("step") == "desc":
+        desc = (update.message.text or "").strip() or "-"
+        cat_id = context.user_data.get("category_id")
+        cat_nm = context.user_data.get("category")
+        card_amt = float(context.user_data.get("card_amt", 0.0))
+        cash_amt = float(context.user_data.get("cash_amt", 0.0))
+        try:
+            append_expense(cat_id, cat_nm, card_amt, cash_amt, desc)
+            total = card_amt + cash_amt
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("➕ Ещё расход", callback_data="expense")],
+                [InlineKeyboardButton("⬅️ В меню",     callback_data="menu")],
+            ])
+            msg = (
+                f"✅ Расход добавлен:\n"
+                f"Категория: *{cat_nm}*\n"
+                f"💳 Карта: {card_amt:.2f}\n"
+                f"💵 Наличные: {cash_amt:.2f}\n"
+                f"Итого: *{total:.2f}*\n"
+                f"📝 {desc}"
+            )
+            await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=kb)
+        except Exception as e:
+            logger.error(f"append_expense error: {e}")
+            await update.message.reply_text("⚠️ Не удалось сохранить расход. Проверь лист 'Расход'.")
+        context.user_data.clear()
         return
 
     # --- Продление договора: ожидание даты ---
@@ -1097,36 +1373,34 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
 
                 try:
                     client = get_gspread_client()
-                    income_ws = client.open_by_key(SPREADSHEET_ID).worksheet("Доход")
+                    income_ws  = client.open_by_key(SPREADSHEET_ID).worksheet("Доход")
                     expense_ws = client.open_by_key(SPREADSHEET_ID).worksheet("Расход")
 
-                    now = datetime.datetime.now().strftime("%d.%m.%Y %H:%М")
-                    # Доход: [date, category, card(C), cash(D), desc]
-                    income_row = [now, "Перевод", "", "", description]
-                    # Расход: [date, card(B), cash(C), desc]
-                    expense_row = [now, "", "", description]
+                    # Формат новых листов:
+                    # [Дата, КатегорияID, Категория, 💳 Карта, 💵 Наличные, 📝 Описание]
+                    now = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
+                    income_row  = [now, "", "Перевод", "", "", description]
+                    expense_row = [now, "", "Перевод", "", "", description]
 
                     q = str(amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
                     if direction == "card_to_cash":
-                        # расход по карте (B), доход в наличные (D)
-                        expense_row[1] = q  # B
-                        income_row[3] = q   # D
+                        # расход по карте, доход наличными
+                        expense_row[3] = q  # 💳 Карта (4-я колонка -> индекс 3)
+                        income_row[4]  = q  # 💵 Наличные (5-я колонка -> индекс 4)
                         arrow = "💳 → 💵"
                     else:
-                        # расход по наличным (C), доход на карту (C)
-                        expense_row[2] = q  # C
-                        income_row[2] = q   # C
+                        # расход наличными, доход по карте
+                        expense_row[4] = q  # 💵 Наличные
+                        income_row[3]  = q  # 💳 Карта
                         arrow = "💵 → 💳"
 
-                    # Запись
-                    expense_ws.append_row(expense_row, value_input_option="USER_ENTERED", table_range="A:D")
-                    income_ws.append_row(income_row, value_input_option="USER_ENTERED", table_range="A:E")
+                    expense_ws.append_row(expense_row, value_input_option="USER_ENTERED", table_range="A:F")
+                    income_ws.append_row(income_row,  value_input_option="USER_ENTERED", table_range="A:F")
 
                     # Баланс
                     live = compute_balance(client)
 
-                    # Тебе — подробное сообщение
                     text_msg = (
                         f"✅ Перевод выполнен:\n"
                         f"{arrow}  {amount}\n"
@@ -1136,14 +1410,14 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
                         f"💵 {_fmt_amount(live['Наличные'])}"
                     )
                     kb = InlineKeyboardMarkup([
-                        [InlineKeyboardButton("📥 Доход", callback_data="add_income"),
-                         InlineKeyboardButton("📤 Расход", callback_data="add_expense")],
+                        [InlineKeyboardButton("📥 Доход",  callback_data="income"),
+                        InlineKeyboardButton("📤 Расход", callback_data="expense")],
                         [InlineKeyboardButton("⬅️ Назад", callback_data="menu")],
                     ])
                     context.user_data.clear()
                     await update.message.reply_text(text_msg, reply_markup=kb, parse_mode="Markdown")
 
-                    # В канал — компактно, без описания
+                    # Сообщение в канал
                     try:
                         group_msg = (
                             f"🔁 Перевод: {arrow} {_fmt_amount(amount)}\n"
@@ -1161,9 +1435,9 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
             # ---- ДОХОД/РАСХОД: перейти к выбору источника ----
             context.user_data["step"] = "source"
             keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("💳 Карта", callback_data="source_card")],
+                [InlineKeyboardButton("💳 Карта",    callback_data="source_card")],
                 [InlineKeyboardButton("💵 Наличные", callback_data="source_cash")],
-                [InlineKeyboardButton("❌ Отмена", callback_data="cancel")],
+                [InlineKeyboardButton("❌ Отмена",   callback_data="cancel")],
             ])
             await update.message.reply_text("Выберите источник:", reply_markup=keyboard)
 
@@ -1171,50 +1445,60 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
             await update.message.reply_text("⚠️ Введите положительное число (пример: 1200.50)")
         return
 
+
     # -------- Шаг описания (ТОЛЬКО для доход/расход) --------
     if step == "description":
-        description = text or ""
+        description = text or "-"
         now = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
 
-        amount = context.user_data.get("amount")
-        category = context.user_data.get("category", "-")
-        source = context.user_data.get("source", "-")
+        amount   = context.user_data.get("amount")
+        source   = context.user_data.get("source", "-")
+        cat_id   = context.user_data.get("category_id")
+        cat_name = context.user_data.get("category")
+
+        # Если категория не выбрана (например, пришли сразу в доход/расход) — используем дефолт «Другое»
+        try:
+            if not cat_id or not cat_name:
+                if action == "income":
+                    cat_id, cat_name = ensure_default_category("Доход")
+                else:
+                    cat_id, cat_name = ensure_default_category("Расход")
+        except Exception as e:
+            logger.error(f"ensure_default_category error: {e}")
+            cat_id, cat_name = "", "Другое"
 
         try:
             client = get_gspread_client()
 
+            # Новые форматы строк:
+            # Доход/Расход: [Дата, КатегорияID, Категория, 💳 Карта, 💵 Наличные, 📝 Описание]
+            row = [now, cat_id, cat_name, "", "", description]
+            q   = str(amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+            if source == "Карта":
+                row[3] = q  # 💳 Карта
+            else:
+                row[4] = q  # 💵 Наличные
+
             if action == "income":
                 sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Доход")
-                row = [now, category, "", "", description]
-                q = str(amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
-                if source == "Карта":
-                    row[2] = q  # C
-                else:
-                    row[3] = q  # D
-                sheet.append_row(row, value_input_option="USER_ENTERED", table_range="A:E")
-
+                sheet.append_row(row, value_input_option="USER_ENTERED", table_range="A:F")
                 text_msg = (
                     f"✅ Добавлено в *Доход*:\n"
                     f"📅 {now}\n"
-                    f"🏷 {category}\n"
+                    f"🏷 {cat_name}\n"
                     f"💰 {amount} ({source})\n"
-                    f"📝 {description or '-'}"
+                    f"📝 {description}"
                 )
             else:
                 sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Расход")
-                row = [now, "", "", description]
-                q = str(amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
-                if source == "Карта":
-                    row[1] = q  # B
-                else:
-                    row[2] = q  # C
-                sheet.append_row(row, value_input_option="USER_ENTERED", table_range="A:D")
-
+                sheet.append_row(row, value_input_option="USER_ENTERED", table_range="A:F")
                 text_msg = (
                     f"✅ Добавлено в *Расход*:\n"
                     f"📅 {now}\n"
                     f"💸 -{amount} ({source})\n"
-                    f"📝 {description or '-'}"
+                    f"🏷 {cat_name}\n"
+                    f"📝 {description}"
                 )
 
             # Живой баланс
@@ -1227,8 +1511,8 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
             )
 
             kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("📥 Доход", callback_data="add_income"),
-                 InlineKeyboardButton("📤 Расход", callback_data="add_expense")],
+                [InlineKeyboardButton("📥 Доход",  callback_data="income"),
+                InlineKeyboardButton("📤 Расход", callback_data="expense")],
                 [InlineKeyboardButton("⬅️ Назад", callback_data="menu")],
             ])
             context.user_data.clear()
@@ -1237,19 +1521,15 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
             # ---- Компактные сообщения в канал ----
             try:
                 source_emoji = "💳" if source == "Карта" else "💵"
-                desc_q = f' “{description}”' if description else ""
+                desc_q = f' “{description}”' if description and description != "-" else ""
                 if action == "income":
-                    # Доход — с категорией и описанием
                     group_msg = (
-                        f"📥 Доход: {source_emoji} +{_fmt_amount(amount)} — {category}{desc_q}\n"
+                        f"📥 Доход: {source_emoji} +{_fmt_amount(amount)} — {cat_name}{desc_q}\n"
                         f"Баланс: 💳 {_fmt_amount(live['Карта'])} | 💵 {_fmt_amount(live['Наличные'])}"
                     )
                 else:
-                    # Расход — тоже с категорией (если есть) и описанием
                     group_msg = (
-                        f"📤 Расход: {source_emoji} -{_fmt_amount(amount)}" +
-                        (f" — {category}" if category and category != "-" else "") +
-                        (desc_q) + "\n" +
+                        f"📤 Расход: {source_emoji} -{_fmt_amount(amount)} — {cat_name}{desc_q}\n"
                         f"Баланс: 💳 {_fmt_amount(live['Карта'])} | 💵 {_fmt_amount(live['Наличные'])}"
                     )
                 await context.bot.send_message(chat_id=REMINDER_CHAT_ID, text=group_msg, parse_mode="Markdown")
@@ -1260,6 +1540,7 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
             logger.error(f"Ошибка записи: {e}")
             await update.message.reply_text("⚠️ Ошибка записи в таблицу.")
         return
+
     # ===== СОЗДАНИЕ АВТО =====
     if context.user_data.get("action") == "create_car":
         step = context.user_data.get("step")
