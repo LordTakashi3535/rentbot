@@ -1065,6 +1065,10 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
         await menu_command(update, context)
         return
 
+    action = context.user_data.get("action")
+    step   = context.user_data.get("step")
+    text   = (update.message.text or "").strip()    
+
     # --- Добавление категории из UI ---
     if context.user_data.get("action") == "cat_add":
         kind = context.user_data.get("kind")
