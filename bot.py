@@ -293,6 +293,36 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await query.edit_message_text("Выберите категорию дохода:", reply_markup=keyboard)
 
+    elif data == "income":
+    await _show_categories_view(query, "Доход")
+    return
+
+    elif data == "expense":
+        await _show_categories_view(query, "Расход")
+        return
+
+    elif data.startswith("income_cat|"):
+        cat_id = data.split("|", 1)[1]
+        cat_name = get_category_name(cat_id)
+        context.user_data.clear()
+        context.user_data["action"] = "income"
+        context.user_data["category_id"] = cat_id
+        context.user_data["category"] = cat_name
+        context.user_data["step"] = "amount"
+        await query.edit_message_text("Введите сумму дохода:", reply_markup=cancel_keyboard())
+        return
+
+    elif data.startswith("expense_cat|"):
+        cat_id = data.split("|", 1)[1]
+        cat_name = get_category_name(cat_id)
+        context.user_data.clear()
+        context.user_data["action"] = "expense"
+        context.user_data["category_id"] = cat_id
+        context.user_data["category"] = cat_name
+        context.user_data["step"] = "amount"
+        await query.edit_message_text("Введите сумму расхода:", reply_markup=cancel_keyboard())
+        return
+
     elif data in ["cat_franky", "cat_fraiz", "cat_other"]:
         category_map = {
             "cat_franky": "Franky",
@@ -1048,37 +1078,6 @@ async def check_reminders(app):
 async def on_startup(app):
     asyncio.create_task(check_reminders(app))
 
-
-    elif data == "income":
-        await _show_categories_view(query, "Доход")
-        return
-
-    elif data == "expense":
-        await _show_categories_view(query, "Расход")
-        return
-
-    elif data.startswith("income_cat|"):
-        cat_id = data.split("|", 1)[1]
-        cat_name = get_category_name(cat_id)
-        context.user_data.clear()
-        context.user_data["action"] = "income"
-        context.user_data["category_id"] = cat_id
-        context.user_data["category"] = cat_name
-        context.user_data["step"] = "amount"
-        await query.edit_message_text("Введите сумму дохода:", reply_markup=cancel_keyboard())
-        return
-
-    elif data.startswith("expense_cat|"):
-        cat_id = data.split("|", 1)[1]
-        cat_name = get_category_name(cat_id)
-        context.user_data.clear()
-        context.user_data["action"] = "expense"
-        context.user_data["category_id"] = cat_id
-        context.user_data["category"] = cat_name
-        context.user_data["step"] = "amount"
-        await query.edit_message_text("Введите сумму расхода:", reply_markup=cancel_keyboard())
-        return
-
 def main():
     application = ApplicationBuilder().token(Telegram_Token).build()
     application.add_handler(CommandHandler("menu", menu_command))
@@ -1092,18 +1091,4 @@ def main():
 if __name__ == "__main__":
     main()
 
-
-async def _show_categories_view(query, kind: str):
-    cats = list_categories(kind)
-    if not cats:
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="menu")]])
-        await query.edit_message_text(f"Нет категорий для {kind.lower()}а.", reply_markup=kb)
-        return
-    cb_prefix = "income_cat" if kind=="Доход" else "expense_cat"
-    buttons = [[InlineKeyboardButton(c["Название"], callback_data=f"{cb_prefix}|{c['ID']}")] for c in cats]
-    buttons.append([InlineKeyboardButton("⬅️ Назад", callback_data="menu")])
-    await query.edit_message_text(
-        f"{'📥' if kind=='Доход' else '📤'} Категории {kind.lower()}:",
-        reply_markup=InlineKeyboardMarkup(buttons)
-    )
 
