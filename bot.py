@@ -429,19 +429,19 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     elif data == "income":
-    cats = list_categories("Доход")
-    if not cats:
-        cat_id, cat_name = ensure_default_category("Доход")
-        context.user_data.clear()
-        context.user_data["flow"] = "income"
-        context.user_data["category_id"] = cat_id
-        context.user_data["category"] = cat_name
-        context.user_data["step"] = "amount_card"
-        await query.edit_message_text("Категорий нет. Использую *Другое*.\nВведите сумму *по карте* (0 если нет):",
-                                      parse_mode="Markdown")
+        cats = list_categories("Доход")
+        if not cats:
+            cat_id, cat_name = ensure_default_category("Доход")
+            context.user_data.clear()
+            context.user_data["flow"] = "income"
+            context.user_data["category_id"] = cat_id
+            context.user_data["category"] = cat_name
+            context.user_data["step"] = "amount_card"
+            await query.edit_message_text("Категорий нет. Использую *Другое*.\nВведите сумму *по карте* (0 если нет):",
+                                        parse_mode="Markdown")
+            return
+        await _show_categories_view(query, "Доход")
         return
-    await _show_categories_view(query, "Доход")
-    return
 
     elif data == "expense":
         cats = list_categories("Расход")
