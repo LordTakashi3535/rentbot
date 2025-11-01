@@ -7,6 +7,10 @@ import datetime
 import re
 import asyncio
 
+from telegram.ext import MessageHandler, filters
+application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_amount_description))
+
+
 # === Dynamic Categories & Records ===
 from datetime import date, datetime
 from typing import Optional, List, Dict, Tuple, Union
@@ -1065,9 +1069,152 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
         await menu_command(update, context)
         return
 
+    # --- DEBUG: короткий лог шагов (можно потом убрать) ---
+    try:
+        logger.info(f"[TEXT] action={context.user_data.get('action')} step={context.user_data.get('step')} text={(update.message.text or '').strip()!r}")
+    except Exception:
+        pass
+
+    # --- КОРОТКОЕ ШОССЕ для доход/расход: amount -> description ---
     action = context.user_data.get("action")
     step   = context.user_data.get("step")
-    text   = (update.message.text or "").strip()    
+    text   = (update.message.text or "").strip()
+
+    from decimal import Decimal, ROUND_HALF_UP
+    import datetime
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    def _to_amount(s: str) -> Decimal:
+        s = (s or "").strip().replace(",", ".")
+        return Decimal(s)
+
+    async def _ask_source(update, context):
+        context.user_data["step"] = "source"
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("💳 Карта",    callback_data="source_card")],
+            [InlineKeyboardButton("💵 Наличные", callback_data="source_cash")],
+            [InlineKeyboardButton("❌ Отмена",   callback_data="cancel")],
+        ])
+        await update.message.reply_text("Выберите источник:", reply_markup=kb)
+
+    # ====== ШАГ ВВОДА СУММЫ ======
+    if step == "amount":
+        try:
+            amount = _to_amount(text)
+            if amount <= 0:
+                raise ValueError("non-positive")
+            context.user_data["amount"] = amount
+
+            # быстрый перевод оставляем как у тебя
+            if action == "transfer":
+                # ... твой код перевода ...
+                # (оставь существующий блок transfer без изменений)
+                pass
+            else:
+                # если почему-то source ещё нет — попросим выбрать
+                if not context.user_data.get("source"):
+                    await _ask_source(update, context)
+                    return
+                # нормальный путь: сразу к описанию
+                context.user_data["step"] = "description"
+                await update.message.reply_text("Добавьте описание (или '-' если без описания):")
+        except Exception:
+            await update.message.reply_text("⚠️ Введите положительное число (пример: 1200.50)")
+        return
+
+    # ====== ШАГ ВВОДА ОПИСАНИЯ ======
+    if step == "description":
+        description = text or "-"
+        now = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
+
+        amount   = context.user_data.get("amount")
+        source   = (context.user_data.get("source") or "").strip()
+        cat_id   = context.user_data.get("category_id")
+        cat_name = context.user_data.get("category")
+
+        # защита: если нет источника/суммы — вернём пользователя на нужный шаг
+        if source not in ("Карта", "Наличные"):
+            await _ask_source(update, context)
+            return
+        if amount is None:
+            context.user_data["step"] = "amount"
+            await update.message.reply_text("Введите сумму:")
+            return
+
+        # если категории нет — тихо ставим «Другое» нужного типа
+        try:
+            if not cat_id or not cat_name:
+                if action == "income":
+                    cat_id, cat_name = ensure_default_category("Доход")
+                else:
+                    cat_id, cat_name = ensure_default_category("Расход")
+        except Exception as e:
+            logger.error(f"ensure_default_category error: {e}")
+            cat_id, cat_name = "", "Другое"
+
+        # запись в лист
+        try:
+            client = get_gspread_client()
+            ws_name = "Доход" if action == "income" else "Расход"
+            ws = client.open_by_key(SPREADSHEET_ID).worksheet(ws_name)
+
+            # строка нового формата:
+            # [Дата, КатегорияID, Категория, 💳 Карта, 💵 Наличные, 📝 Описание]
+            row = [now, cat_id, cat_name, "", "", description]
+            q   = str(amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+            if source == "Карта":
+                row[3] = q
+            else:
+                row[4] = q
+
+            # Чтобы не упираться в пустой лист — можно без table_range,
+            # но если хочешь, оставь A:F
+            ws.append_row(row, value_input_option="USER_ENTERED")
+
+            # баланс
+            live = compute_balance(client)
+
+            header = "✅ Добавлено в *Доход*:" if action == "income" else "✅ Добавлено в *Расход*:"
+            money  = f"💰 {amount} ({source})" if action == "income" else f"💸 -{amount} ({source})"
+            text_msg = (
+                f"{header}\n"
+                f"📅 {now}\n"
+                f"🏷 {cat_name}\n"
+                f"{money}\n"
+                f"📝 {description}"
+                f"\n\n📊 Баланс:\n"
+                f"💼 {_fmt_amount(live['Баланс'])}\n"
+                f"💳 {_fmt_amount(live['Карта'])}\n"
+                f"💵 {_fmt_amount(live['Наличные'])}"
+            )
+
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("📥 Доход",  callback_data="income"),
+                InlineKeyboardButton("📤 Расход", callback_data="expense")],
+                [InlineKeyboardButton("⬅️ Назад",  callback_data="menu")],
+            ])
+            context.user_data.clear()
+            await update.message.reply_text(text_msg, reply_markup=kb, parse_mode="Markdown")
+
+            # короткое сообщение в канал (не критично, можно убрать)
+            try:
+                source_emoji = "💳" if source == "Карта" else "💵"
+                sign = "+" if action == "income" else "-"
+                group_msg = (
+                    f"{'📥 Доход' if action=='income' else '📤 Расход'}: "
+                    f"{source_emoji} {sign}{_fmt_amount(amount)} — {cat_name}"
+                    + (f' “{description}”' if description and description != "-" else "")
+                    + "\n"
+                    f"Баланс: 💳 {_fmt_amount(live['Карта'])} | 💵 {_fmt_amount(live['Наличные'])}"
+                )
+                await context.bot.send_message(chat_id=REMINDER_CHAT_ID, text=group_msg, parse_mode="Markdown")
+            except Exception as e:
+                logger.error(f"send group error: {e}")
+
+        except Exception as e:
+            logger.error(f"WRITE ERROR: {e}")
+            await update.message.reply_text("⚠️ Ошибка записи в таблицу.")
+        return
 
     # --- Добавление категории из UI ---
     if context.user_data.get("action") == "cat_add":
