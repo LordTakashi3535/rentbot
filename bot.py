@@ -8,8 +8,8 @@ import re
 import asyncio
 
 # === Dynamic Categories & Records ===
-from typing import Optional, Union, List, Dict, Tuple
-from datetime import datetime
+from datetime import date, datetime
+from typing import Optional, List, Dict, Tuple, Union
 
 INCOME_SHEET = "Доход"    # если назвал лист иначе — поменяй тут
 EXPENSE_SHEET = "Расход"  # если назвал лист иначе — поменяй тут
