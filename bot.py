@@ -19,6 +19,75 @@ def _parse_date_flex(s: str) -> datetime.date | None:
             pass
     return None
 
+def get_cats_ws(client):
+    return client.open_by_key(SPREADSHEET_ID).worksheet("Категории")
+
+def list_categories(kind: str) -> list[dict]:
+    """kind: 'Доход' или 'Расход'"""
+    client = get_gspread_client()
+    ws = get_cats_ws(client)
+    rows = ws.get_all_values()
+    if not rows or len(rows) < 2:
+        return []
+    header = rows[0]
+    idx = {h.strip(): i for i, h in enumerate(header)}
+    out = []
+    for r in rows[1:]:
+        if not r or len(r) <= idx.get("Тип", -1): 
+            continue
+        if r[idx["Тип"]].strip() != kind:
+            continue
+        item = {
+            "row": r,
+            "row_idx": rows.index(r) + 1,  # 1-based
+            "ID": r[idx["ID"]] if "ID" in idx and idx["ID"] < len(r) else "",
+            "Тип": r[idx["Тип"]],
+            "Название": r[idx["Название"]] if "Название" in idx and idx["Название"] < len(r) else "",
+            "Активна": r[idx["Активна"]] if "Активна" in idx and idx["Активна"] < len(r) else "1",
+            "Порядок": int(r[idx["Порядок"]]) if "Порядок" in idx and idx["Порядок"] < len(r) and r[idx["Порядок"]].isdigit() else 0,
+        }
+        out.append(item)
+    # показываем только активные
+    out = [x for x in out if x["Активна"] == "1"]
+    # сортировка по Порядок, затем по Названию
+    out.sort(key=lambda x: (x["Порядок"], x["Название"].lower()))
+    return out
+
+from datetime import datetime
+
+def add_category(kind: str, name: str):
+    client = get_gspread_client()
+    ws = get_cats_ws(client)
+    rows = ws.get_all_values()
+    if not rows:
+        ws.append_row(["ID", "Тип", "Название", "Активна", "Порядок"])
+    cat_id = "cat_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+    ws.append_row([cat_id, kind, name.strip(), "1", "0"])
+    return cat_id
+
+def set_category_active(cat_id: str, active: bool):
+    client = get_gspread_client()
+    ws = get_cats_ws(client)
+    rows = ws.get_all_values()
+    if not rows: return
+    header = rows[0]
+    idx = {h.strip(): i for i, h in enumerate(header)}
+    for i, r in enumerate(rows[1:], start=2):
+        if r and r[idx["ID"]] == cat_id:
+            ws.update_cell(i, idx["Активна"] + 1, "1" if active else "0")
+            return
+
+def rename_category(cat_id: str, new_name: str):
+    client = get_gspread_client()
+    ws = get_cats_ws(client)
+    rows = ws.get_all_values()
+    header = rows[0]
+    idx = {h.strip(): i for i, h in enumerate(header)}
+    for i, r in enumerate(rows[1:], start=2):
+        if r and r[idx["ID"]] == cat_id:
+            ws.update_cell(i, idx["Название"] + 1, new_name.strip())
+            return    
+
 def _days_left_label(date_str: str) -> tuple[str, int | None]:
     """
     Возвращает метку 'осталось N дней' / 'сегодня' / 'просрочено N дней' и сам N (может быть <0),
@@ -274,6 +343,7 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
      InlineKeyboardButton("📤 Расход", callback_data="add_expense")],
     [InlineKeyboardButton("🔁 Перевод", callback_data="transfer"),
      InlineKeyboardButton("🚗 Автомобили", callback_data="cars")],
+    [InlineKeyboardButton("⚙️ Настройки", callback_data="settings")],
     [InlineKeyboardButton("📈 Отчёт 7 дней", callback_data="report_7"),
      InlineKeyboardButton("📊 Отчёт 30 дней", callback_data="report_30")],
 ])
@@ -303,18 +373,71 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await menu_command(update, context)
         return
 
-    if data == "add_income":
-        context.user_data.clear()
-        context.user_data["action"] = "income_category"
-        keyboard = InlineKeyboardMarkup(
-            [
-                [InlineKeyboardButton("Franky", callback_data="cat_franky")],
-                [InlineKeyboardButton("Fraiz", callback_data="cat_fraiz")],
-                [InlineKeyboardButton("Другое", callback_data="cat_other")],
-                [InlineKeyboardButton("❌ Отмена", callback_data="cancel")],
-            ]
+    elif data == "income":
+        cats = list_categories("Доход")
+        if not cats:
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("➕ Добавить категорию", callback_data="cat_add|Доход")],
+                [InlineKeyboardButton("⬅️ Назад", callback_data="menu")],
+            ])
+            await query.edit_message_text("Нет категорий дохода.", reply_markup=kb)
+            return
+        buttons = [[InlineKeyboardButton(c["Название"], callback_data=f"income_cat|{c['ID']}")] for c in cats]
+        buttons.append([InlineKeyboardButton("➕ Добавить категорию", callback_data="cat_add|Доход")])
+        buttons.append([InlineKeyboardButton("⬅️ Назад", callback_data="menu")])
+        await query.edit_message_text("Выберите категорию дохода:", reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    elif data == "expense":
+        cats = list_categories("Расход")
+        if not cats:
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("➕ Добавить категорию", callback_data="cat_add|Расход")],
+                [InlineKeyboardButton("⬅️ Назад", callback_data="menu")],
+            ])
+            await query.edit_message_text("Нет категорий расхода.", reply_markup=kb)
+            return
+        buttons = [[InlineKeyboardButton(c["Название"], callback_data=f"expense_cat|{c['ID']}")] for c in cats]
+        buttons.append([InlineKeyboardButton("➕ Добавить категорию", callback_data="cat_add|Расход")])
+        buttons.append([InlineKeyboardButton("⬅️ Назад", callback_data="menu")])
+        await query.edit_message_text("Выберите категорию расхода:", reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    elif data == "settings":
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📥 Категории дохода", callback_data="cats_income")],
+            [InlineKeyboardButton("📤 Категории расхода", callback_data="cats_expense")],
+            [InlineKeyboardButton("⬅️ Назад", callback_data="menu")],
+        ])
+        await query.edit_message_text("⚙️ Настройки:", reply_markup=kb)
+        return
+    
+    elif data == "settings":
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📥 Категории дохода",  callback_data="cats_income")],
+            [InlineKeyboardButton("📤 Категории расхода", callback_data="cats_expense")],
+            [InlineKeyboardButton("⬅️ Назад", callback_data="menu")],
+        ])
+        await query.edit_message_text("⚙️ Настройки:", reply_markup=kb)
+        return
+
+    async def _show_categories_view(query, kind: str):
+        cats = list_categories(kind)
+        buttons = [[InlineKeyboardButton(c["Название"], callback_data=f"cat_edit|{c['ID']}")] for c in cats]
+        buttons.append([InlineKeyboardButton("➕ Добавить категорию", callback_data=f"cat_add|{kind}")])
+        buttons.append([InlineKeyboardButton("⬅️ Назад", callback_data="settings")])
+        await query.edit_message_text(
+            f"{'📥' if kind=='Доход' else '📤'} Категории {kind.lower()}:",
+            reply_markup=InlineKeyboardMarkup(buttons)
         )
-        await query.edit_message_text("Выберите категорию дохода:", reply_markup=keyboard)
+
+    elif data == "cats_income":
+        await _show_categories_view(query, "Доход")
+        return
+
+    elif data == "cats_expense":
+        await _show_categories_view(query, "Расход")
+        return
 
     elif data == "cars_edit":
         # список всех машин по названию
@@ -375,6 +498,45 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
         return
+
+     # --- Добавить категорию ---
+    elif data.startswith("cat_add|"):
+        kind = data.split("|", 1)[1]  # "Доход" или "Расход"
+        context.user_data["action"] = "cat_add"
+        context.user_data["kind"] = kind
+        await query.edit_message_text(
+            f"Введите название новой категории для {kind.lower()}:",
+            parse_mode="Markdown"
+        )
+        return
+
+    # --- Меню одной категории ---
+    elif data.startswith("cat_edit|"):
+        cat_id = data.split("|", 1)[1]
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✏️ Переименовать",           callback_data=f"cat_rename|{cat_id}")],
+            [InlineKeyboardButton("🙈 Скрыть (выключить)",       callback_data=f"cat_disable|{cat_id}")],
+            [InlineKeyboardButton("🗑 Удалить",               callback_data=f"cat_delete|{cat_id}")],
+            [InlineKeyboardButton("⬅️ Назад",                   callback_data="settings")],
+        ])
+        await query.edit_message_text("Выберите действие с категорией:", reply_markup=kb)
+        return
+
+    # --- Скрыть категорию ---
+    elif data.startswith("cat_disable|"):
+        cat_id = data.split("|", 1)[1]
+        set_category_active(cat_id, False)
+        await query.edit_message_text("🙈 Категория скрыта. Перейдите назад, чтобы обновить список.")
+        return
+
+    # --- Переименовать (запрос текста) ---
+    elif data.startswith("cat_rename|"):
+        cat_id = data.split("|", 1)[1]
+        context.user_data["action"] = "cat_rename"
+        context.user_data["cat_id"] = cat_id
+        await query.edit_message_text("Введите новое название категории:")
+        return
+   
 
     elif data.startswith("editcar_select|"):
         name = data.split("|", 1)[1]
@@ -555,12 +717,6 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["category"] = category_map[data]
         context.user_data["step"] = "amount"
         await query.edit_message_text("Введите сумму дохода:", reply_markup=cancel_keyboard())
-
-    elif data == "add_expense":
-        context.user_data.clear()
-        context.user_data["action"] = "expense"
-        context.user_data["step"] = "amount"
-        await query.edit_message_text("Введите сумму расхода:", reply_markup=cancel_keyboard())
 
     elif data == "source_card":
         context.user_data["source"] = "Карта"
@@ -886,6 +1042,43 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
         context.user_data.clear()
         await update.message.reply_text("❌ Отменено.")
         await menu_command(update, context)
+        return
+
+    # --- Добавление категории (из настроек) ---
+    if context.user_data.get("action") == "cat_add":
+        kind = context.user_data.get("kind")
+        name = (update.message.text or "").strip()
+        if not name:
+            await update.message.reply_text("❌ Название не может быть пустым. Введите ещё раз:")
+            return
+        try:
+            add_category(kind, name)
+            context.user_data.clear()
+            # показать список категорий обратно
+            await update.message.reply_text(f"✅ Категория добавлена: {name}")
+            # имитируем «вернуться» в нужный список
+            dummy = types.SimpleNamespace() if 'types' in globals() else None
+            await update.message.reply_text("Открываю список категорий…")
+            # Если у тебя показ списков только через callback, просто попроси нажать «Категории …» ещё раз.
+        except Exception as e:
+            logger.error(f"cat_add error: {e}")
+            await update.message.reply_text("⚠️ Не удалось добавить категорию. Проверьте лист 'Категории'.")
+        return
+
+    # --- Переименование категории ---
+    if context.user_data.get("action") == "cat_rename":
+        cat_id = context.user_data.get("cat_id")
+        new_name = (update.message.text or "").strip()
+        if not new_name:
+            await update.message.reply_text("❌ Название не может быть пустым. Введите ещё раз:")
+            return
+        try:
+            rename_category(cat_id, new_name)
+            context.user_data.clear()
+            await update.message.reply_text(f"✅ Переименовано: {new_name}")
+        except Exception as e:
+            logger.error(f"cat_rename error: {e}")
+            await update.message.reply_text("⚠️ Не удалось переименовать категорию.")
         return
 
     # --- Продление договора: ожидание даты ---
