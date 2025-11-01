@@ -420,22 +420,22 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             has_driver = (driver != "—") or (driver_phone != "—") or bool(contract)
 
             if has_driver:
-            driver_rows = [
-                [InlineKeyboardButton("⏩ Продлить договор", callback_data=f"car_extend:{car_id}")],  # продление по ID оставляем
-                [InlineKeyboardButton("🔁 Сменить водителя", callback_data="editcar_driver_menu")],  # БЕЗ параметров
-            ]
-        else:
-            driver_rows = [
-                [InlineKeyboardButton("👤 Добавить водителя", callback_data="editcar_driver")],       # БЕЗ параметров
-            ]
+                driver_rows = [
+                    [InlineKeyboardButton("⏩ Продлить договор", callback_data=f"car_extend:{car_id}")],  # продление по ID оставляем
+                    [InlineKeyboardButton("🔁 Сменить водителя", callback_data="editcar_driver_menu")],  # БЕЗ параметров
+                ]
+            else:
+                driver_rows = [
+                    [InlineKeyboardButton("👤 Добавить водителя", callback_data="editcar_driver")],       # БЕЗ параметров
+                ]
 
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🛡️ Страховка", callback_data="editcar_field|insurance")],
-            [InlineKeyboardButton("🧰 Техосмотр",   callback_data="editcar_field|tech")],
-            *driver_rows,
-            [InlineKeyboardButton("🗑 Удалить машину", callback_data="editcar_delete_confirm")],      # БЕЗ параметров
-            [InlineKeyboardButton("⬅️ Назад", callback_data="cars_edit")],
-        ])
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🛡️ Страховка", callback_data="editcar_field|insurance")],
+                [InlineKeyboardButton("🧰 Техосмотр",   callback_data="editcar_field|tech")],
+                *driver_rows,
+                [InlineKeyboardButton("🗑 Удалить машину", callback_data="editcar_delete_confirm")],      # БЕЗ параметров
+                [InlineKeyboardButton("⬅️ Назад", callback_data="cars_edit")],
+            ])
             await query.edit_message_text(text, reply_markup=kb, parse_mode="Markdown")
         except Exception as e:
             logger.error(f"editcar_select fetch error: {e}")
