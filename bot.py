@@ -51,6 +51,50 @@ def list_categories(kind: str):
     out.sort(key=lambda x: (x["Порядок"], x["Название"].lower()))
     return out
 
+def _sum_sheet_period(client, sheet_name: str, days: int):
+    """
+    Возвращает (total_card, total_cash, rows_filtered)
+    rows_filtered — строки, попавшие в диапазон по дате (последние N дней).
+    Формат строк: [Дата, КатID, Кат, 💳, 💵, 📝]
+    """
+    ws = client.open_by_key(SPREADSHEET_ID).worksheet(sheet_name)
+    rows = ws.get_all_values()[1:]
+    now = datetime.datetime.now()
+    start_date = now - datetime.timedelta(days=days)
+
+    total_card = Decimal("0")
+    total_cash = Decimal("0")
+    filtered = []
+
+    for r in rows:
+        if not r:
+            continue
+        dt = _parse_dt_safe(r[0] if len(r) > 0 else "")
+        if not dt or dt < start_date:
+            continue
+
+        card = _to_amount(r[3] if len(r) > 3 else "")
+        cash = _to_amount(r[4] if len(r) > 4 else "")
+        total_card += card
+        total_cash += cash
+        filtered.append(r)
+
+    return total_card, total_cash, filtered
+
+
+def _render_detail_line(r: list, is_income: bool) -> str:
+    dt   = r[0] if len(r) > 0 else ""
+    cat  = r[2] if len(r) > 2 else "-"
+    card = r[3] if len(r) > 3 else ""
+    cash = r[4] if len(r) > 4 else ""
+    desc = r[5] if len(r) > 5 else "-"
+    total = _to_amount(card) + _to_amount(cash)
+
+    if is_income:
+        return f"📅 {dt} | 🚗 {cat} | 🟢 {_fmt_amount(total)} (💳 {card or '0'} | 💵 {cash or '0'}) | 📝 {desc}"
+    else:
+        return f"📅 {dt} | 🚗 {cat} | 🔴 -{_fmt_amount(total)} (💳 {card or '0'} | 💵 {cash or '0'}) | 📝 {desc}"    
+
 def get_category_name(cat_id: str) -> str:
     client = get_gspread_client()
     ws = get_cats_ws(client)
@@ -318,14 +362,13 @@ def compute_balance(client):
 
 def compute_summary(client):
     """
-    Возвращает полный набор показателей как на листе 'Сводка':
-    - Начальная сумма (INITIAL_BALANCE)
-    - Доход = SUM(Доход!C:D)
-    - Расход = SUM(Расход!B:C)
-    - Наличные = SUM(Доход!D) - SUM(Расход!C)
-    - Карта = INITIAL_BALANCE + SUM(Доход!C) - SUM(Расход!B)
+    Возвращает набор показателей как в 'Сводка' под НОВЫЙ формат:
+    - Доход = SUM(Доход!D:E)
+    - Расход = SUM(Расход!D:E)
+    - Наличные = SUM(Доход!E) - SUM(Расход!E)
+    - Карта = INITIAL_BALANCE + SUM(Доход!D) - SUM(Расход!D)
     - Баланс = Карта + Наличные
-    - Заработано = Доход - Начальная сумма
+    - Заработано = Доход - Начальная сумма  (как у тебя)
     """
     income_ws = client.open_by_key(SPREADSHEET_ID).worksheet("Доход")
     expense_ws = client.open_by_key(SPREADSHEET_ID).worksheet("Расход")
@@ -336,26 +379,22 @@ def compute_summary(client):
     income_card = Decimal("0")
     income_cash = Decimal("0")
     for r in income_rows:
-        if len(r) > 2:
-            income_card += _to_amount(r[2])
-        if len(r) > 3:
-            income_cash += _to_amount(r[3])
+        if len(r) > 3: income_card += _to_amount(r[3])  # 💳 D
+        if len(r) > 4: income_cash += _to_amount(r[4])  # 💵 E
 
     expense_card = Decimal("0")
     expense_cash = Decimal("0")
     for r in expense_rows:
-        if len(r) > 1:
-            expense_card += _to_amount(r[1])
-        if len(r) > 2:
-            expense_cash += _to_amount(r[2])
+        if len(r) > 3: expense_card += _to_amount(r[3])  # 💳 D
+        if len(r) > 4: expense_cash += _to_amount(r[4])  # 💵 E
 
-    income_total = income_card + income_cash
+    income_total  = income_card + income_cash
     expense_total = expense_card + expense_cash
 
-    cash = income_cash - expense_cash
-    card = INITIAL_BALANCE + income_card - expense_card
+    cash  = income_cash - expense_cash
+    card  = INITIAL_BALANCE + income_card - expense_card
     balance = card + cash
-    earned = income_total - INITIAL_BALANCE
+    earned  = income_total - INITIAL_BALANCE
 
     return {
         "Начальная": INITIAL_BALANCE,
@@ -366,6 +405,7 @@ def compute_summary(client):
         "Баланс": balance,
         "Заработано": earned,
     }
+
 # Статичная клавиатура с кнопкой "Меню" под полем ввода
 def persistent_menu_keyboard():
     return ReplyKeyboardMarkup(
@@ -874,50 +914,24 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Ошибка баланса: {e}")
             await query.message.reply_text("⚠️ Не удалось получить баланс.")
 
-    # В handle_button добавим обработку новых callback_data
     elif data in ["report_7", "report_30"]:
         days = 7 if data == "report_7" else 30
         try:
             client = get_gspread_client()
-            now = datetime.datetime.now()
-            start_date = now - datetime.timedelta(days=days)
 
-            def get_sum_and_details(sheet_name, is_income):
-                sheet = client.open_by_key(SPREADSHEET_ID).worksheet(sheet_name)
-                rows = sheet.get_all_values()[1:]
-                total = Decimal('0.0')
-                for row in rows:
-                    try:
-                        date_str = row[0].strip()
-                        try:
-                            dt = datetime.datetime.strptime(date_str, "%d.%m.%Y %H:%M")
-                        except ValueError:
-                            dt = datetime.datetime.strptime(date_str, "%d.%m.%Y")
-                        if dt >= start_date:
-                            if is_income:
-                                card = row[2] if len(row) > 2 else ""
-                                cash = row[3] if len(row) > 3 else ""
-                            else:
-                                card = row[1] if len(row) > 1 else ""
-                                cash = row[2] if len(row) > 2 else ""
-                            amount_str = card or cash or "0"
-                            amount_str = amount_str.replace(" ", "").replace(",", ".")
-                            amount = _to_amount(amount_str)
-                            total += amount
-                    except Exception as e:
-                        logger.warning(f"Ошибка строки: {row} — {e}")
-                        continue
-                return total
+            in_card, in_cash, _ = _sum_sheet_period(client, "Доход", days)
+            ex_card, ex_cash, _ = _sum_sheet_period(client, "Расход", days)
 
-            income_total = get_sum_and_details("Доход", True)
-            expense_total = get_sum_and_details("Расход", False)
-            net_income = income_total - expense_total
+            income_total  = in_card + in_cash
+            expense_total = ex_card + ex_cash
+            net_income    = income_total - expense_total
 
             text = (
                 f"📅 Отчёт за {days} дней:\n\n"
-                f"📥 Доход: {_fmt_amount(income_total)}\n"
-                f"📤 Расход: {_fmt_amount(expense_total)}\n"
-                f"💰 Чистый доход: {_fmt_amount(net_income)}"
+                f"📥 Доход:  {_fmt_amount(income_total)}  (💳 {_fmt_amount(in_card)} | 💵 {_fmt_amount(in_cash)})\n"
+                f"📤 Расход: {_fmt_amount(expense_total)} (💳 {_fmt_amount(ex_card)} | 💵 {_fmt_amount(ex_cash)})\n"
+                f"— — — — — — — — —\n"
+                f"💼 Итог: *{_fmt_amount(net_income)}*"
             )
             keyboard = InlineKeyboardMarkup(
                 [
@@ -929,6 +943,8 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Ошибка получения отчёта: {e}")
             await query.message.reply_text("⚠️ Не удалось загрузить отчёт.")
+        return
+
 
     elif re.match(r"report_(7|30)_details_page(\d+)", data):
         m = re.match(r"report_(7|30)_details_page(\d+)", data)
@@ -953,102 +969,42 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         days, detail_type, page = int(m.group(1)), m.group(2), int(m.group(3))
         try:
             client = get_gspread_client()
-            now = datetime.datetime.now()
-            start_date = now - datetime.timedelta(days=days)
-            sheet_name = "Доход" if detail_type == "income" else "Расход"
-            sheet = client.open_by_key(SPREADSHEET_ID).worksheet(sheet_name)
-            rows = sheet.get_all_values()[1:]
-            filtered = []
-            for row in rows:
-                try:
-                    try:
-                        dt = datetime.datetime.strptime(row[0].strip(), "%d.%m.%Y %H:%M")
-                    except ValueError:
-                        dt = datetime.datetime.strptime(row[0].strip(), "%d.%m.%Y")
-                    if dt >= start_date:
-                        filtered.append(row)
-                except Exception:
-                    continue
+            is_income = (detail_type == "income")
+            sheet_name = "Доход" if is_income else "Расход"
+
+            _, _, filtered = _sum_sheet_period(client, sheet_name, days)
 
             page_size = 10
-            total_pages = (len(filtered) + page_size - 1) // page_size
+            total_pages = max(1, (len(filtered) + page_size - 1) // page_size)
             page = max(0, min(page, total_pages - 1))
             page_rows = filtered[page * page_size : (page + 1) * page_size]
 
-            lines = []
-            for r in page_rows:
-                date = r[0]
-                if detail_type == "income":
-                    category = r[1] if len(r) > 1 else "-"
-                    card = r[2] if len(r) > 2 else ""
-                    cash = r[3] if len(r) > 3 else ""
-                    desc = r[4] if len(r) > 4 else "-"
-                    # Определяем сумму и источник
-                    if card:
-                        amount = card
-                        source_emoji = "💳"
-                    elif cash:
-                        amount = cash
-                        source_emoji = "💵"
-                    else:
-                        amount = "0"
-                        source_emoji = ""
-                    amount = _fmt_amount(amount)
-                    # Иконка категории
-                    category_icon = "🛠️" if category.strip().lower() == "другое" else "🚗"
-                    lines.append(
-                        f"📅 {date} | {category_icon} {category} | 🟢 {source_emoji} {amount} | 📝 {desc}"
-                    )
-                else:
-                    card = r[1] if len(r) > 1 else ""
-                    cash = r[2] if len(r) > 2 else ""
-                    desc = r[3] if len(r) > 3 else "-"
-                    # Определяем сумму и источник
-                    if card:
-                        amount = card
-                        source_emoji = "💳"
-                    elif cash:
-                        amount = cash
-                        source_emoji = "💵"
-                    else:
-                        amount = "0"
-                        source_emoji = ""
-                    amount = _fmt_amount(amount)
-                    lines.append(f"📅 {date} | 🔴 {source_emoji} -{amount} | 📝 {desc}")
-
-            text = (
-                f"📋 Подробности ({'Доходов' if detail_type == 'income' else 'Расходов'}) за {days} дней:\n\n"
-            )
+            lines = [_render_detail_line(r, is_income) for r in page_rows]
+            text = f"📋 Подробности ({'Доход' if is_income else 'Расход'}) за {days} дней:\n\n"
             text += "\n".join(lines) if lines else "Данные не найдены."
 
             buttons = []
             if page > 0:
                 buttons.append(
-                    InlineKeyboardButton(
-                        "⬅️ Предыдущая",
-                        callback_data=f"report_{days}_details_{detail_type}_page{page-1}",
-                    )
+                    InlineKeyboardButton("⬅️ Предыдущая", callback_data=f"report_{days}_details_{detail_type}_page{page-1}")
                 )
             if page < total_pages - 1:
                 buttons.append(
-                    InlineKeyboardButton(
-                        "➡️ Следующая",
-                        callback_data=f"report_{days}_details_{detail_type}_page{page+1}",
-                    )
+                    InlineKeyboardButton("➡️ Следующая", callback_data=f"report_{days}_details_{detail_type}_page{page+1}")
                 )
 
             keyboard = InlineKeyboardMarkup(
                 [
-                    buttons,
+                    buttons if buttons else [InlineKeyboardButton("• 1/1 •", callback_data=f"report_{days}_details_page0")],
                     [InlineKeyboardButton("⬅️ Назад", callback_data=f"report_{days}_details_page0")],
-                    [InlineKeyboardButton("⬅️ Главное меню", callback_data="menu")],
+                    [InlineKeyboardButton("🏠 Меню", callback_data="menu")],
                 ]
             )
             await query.edit_message_text(text, reply_markup=keyboard)
         except Exception as e:
             logger.error(f"Ошибка загрузки подробностей отчёта: {e}")
             await query.message.reply_text("⚠️ Не удалось загрузить подробности отчёта.")
-
+        return
 
 # Обработчик нажатия на кнопку "Меню" с клавиатуры — не отправляем текст, просто открываем меню
 async def on_menu_button_pressed(update: Update, context: ContextTypes.DEFAULT_TYPE):
