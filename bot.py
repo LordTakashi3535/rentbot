@@ -443,6 +443,8 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
      InlineKeyboardButton("📤 Расход", callback_data="expense")],
     [InlineKeyboardButton("🔁 Перевод", callback_data="transfer"),
      InlineKeyboardButton("🚗 Автомобили", callback_data="cars")],
+    [InlineKeyboardButton("⚙️ Настройки", callback_data="settings"),
+     InlineKeyboardButton("🔲 Пусто", callback_data="empty")],
     [InlineKeyboardButton("📈 Отчёт 7 дней", callback_data="report_7"),
      InlineKeyboardButton("📊 Отчёт 30 дней", callback_data="report_30")],
 ])
