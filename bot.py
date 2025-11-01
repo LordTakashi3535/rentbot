@@ -7,23 +7,12 @@ import datetime
 import re
 import asyncio
 
-def _parse_date_flex(s: str) -> datetime.date | None:
-    """Парсит 'ДД.ММ.ГГГГ' или 'ДД.ММ.ГГГГ ЧЧ:ММ'. Возвращает date или None."""
-    if not s:
-        return None
-    s = s.strip()
-    for fmt in ("%d.%m.%Y %H:%M", "%d.%m.%Y"):
-        try:
-            return datetime.datetime.strptime(s, fmt).date()
-        except ValueError:
-            pass
-    return None
 
+# === Category helpers for dynamic income/expense ===
 def get_cats_ws(client):
     return client.open_by_key(SPREADSHEET_ID).worksheet("Категории")
 
-def list_categories(kind: str) -> list[dict]:
-    """kind: 'Доход' или 'Расход'"""
+def list_categories(kind: str):
     client = get_gspread_client()
     ws = get_cats_ws(client)
     rows = ws.get_all_values()
@@ -32,140 +21,59 @@ def list_categories(kind: str) -> list[dict]:
     header = rows[0]
     idx = {h.strip(): i for i, h in enumerate(header)}
     out = []
-    for r in rows[1:]:
-        if not r or len(r) <= idx.get("Тип", -1): 
+    for i, r in enumerate(rows[1:], start=2):
+        if not r: 
+            continue
+        if "Тип" not in idx or "Название" not in idx or "Активна" not in idx or "ID" not in idx:
+            continue
+        if idx["Тип"] >= len(r) or idx["Название"] >= len(r) or idx["Активна"] >= len(r) or idx["ID"] >= len(r):
             continue
         if r[idx["Тип"]].strip() != kind:
             continue
-        item = {
-            "row": r,
-            "row_idx": rows.index(r) + 1,  # 1-based
-            "ID": r[idx["ID"]] if "ID" in idx and idx["ID"] < len(r) else "",
-            "Тип": r[idx["Тип"]],
-            "Название": r[idx["Название"]] if "Название" in idx and idx["Название"] < len(r) else "",
-            "Активна": r[idx["Активна"]] if "Активна" in idx and idx["Активна"] < len(r) else "1",
-            "Порядок": int(r[idx["Порядок"]]) if "Порядок" in idx and idx["Порядок"] < len(r) and r[idx["Порядок"]].isdigit() else 0,
-        }
-        out.append(item)
-    # показываем только активные
-    out = [x for x in out if x["Активна"] == "1"]
-    # сортировка по Порядок, затем по Названию
+        if r[idx["Активна"]].strip() != "1":
+            continue
+        name = r[idx["Название"]].strip()
+        cat_id = r[idx["ID"]].strip()
+        order = 0
+        if "Порядок" in idx and idx["Порядок"] < len(r):
+            val = r[idx["Порядок"]].strip()
+            if val.isdigit() or (val.startswith('-') and val[1:].isdigit()):
+                order = int(val)
+        out.append({"row_idx": i, "ID": cat_id, "Название": name, "Порядок": order})
     out.sort(key=lambda x: (x["Порядок"], x["Название"].lower()))
     return out
 
-from datetime import datetime
-
-def add_category(kind: str, name: str):
+def get_category_name(cat_id: str) -> str:
     client = get_gspread_client()
     ws = get_cats_ws(client)
     rows = ws.get_all_values()
     if not rows:
-        ws.append_row(["ID", "Тип", "Название", "Активна", "Порядок"])
-    cat_id = "cat_" + datetime.now().strftime("%Y%m%d_%H%M%S")
-    ws.append_row([cat_id, kind, name.strip(), "1", "0"])
+        return cat_id
+    header = rows[0]
+    idx = {h.strip(): i for i, h in enumerate(header)}
+    if "ID" not in idx:
+        return cat_id
+    for r in rows[1:]:
+        if idx["ID"] < len(r) and r[idx["ID"]].strip() == cat_id:
+            if "Название" in idx and idx["Название"] < len(r):
+                nm = r[idx["Название"]].strip()
+                return nm or cat_id
+            return cat_id
     return cat_id
 
-def set_category_active(cat_id: str, active: bool):
-    client = get_gspread_client()
-    ws = get_cats_ws(client)
-    rows = ws.get_all_values()
-    if not rows: return
-    header = rows[0]
-    idx = {h.strip(): i for i, h in enumerate(header)}
-    for i, r in enumerate(rows[1:], start=2):
-        if r and r[idx["ID"]] == cat_id:
-            ws.update_cell(i, idx["Активна"] + 1, "1" if active else "0")
-            return
 
-def rename_category(cat_id: str, new_name: str):
-    client = get_gspread_client()
-    ws = get_cats_ws(client)
-    rows = ws.get_all_values()
-    header = rows[0]
-    idx = {h.strip(): i for i, h in enumerate(header)}
-    for i, r in enumerate(rows[1:], start=2):
-        if r and r[idx["ID"]] == cat_id:
-            ws.update_cell(i, idx["Название"] + 1, new_name.strip())
-            return    
+async def _show_categories_view(query, kind: str):
+    cats = list_categories(kind)
+    buttons = [[InlineKeyboardButton(c["Название"], callback_data=f"{'income_cat' if kind=='Доход' else 'expense_cat'}|{c['ID']}")] for c in cats]
+    buttons.append([InlineKeyboardButton("➕ Добавить категорию", callback_data=f"cat_add|{kind}")])
+    buttons.append([InlineKeyboardButton("⬅️ Назад", callback_data="menu")])
+    await query.edit_message_text(
+        f"{'📥' if kind=='Доход' else '📤'} Категории {kind.lower()}:",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
 
-def _days_left_label(date_str: str) -> tuple[str, int | None]:
-    """
-    Возвращает метку 'осталось N дней' / 'сегодня' / 'просрочено N дней' и сам N (может быть <0),
-    либо ('—', None) если даты нет, либо ('неверный формат', None) если не распарсили.
-    """
-    if not date_str:
-        return "—", None
-    d = _parse_date_flex(date_str)
-    if not d:
-        return "неверный формат", None
-    today = datetime.date.today()
-    delta = (d - today).days
-    if delta > 0:
-        return f"осталось {delta} дней", delta
-    elif delta == 0:
-        return "сегодня", 0
-    else:
-        return f"просрочено {abs(delta)} дней", delta
 
-def _ensure_column(ws, header_name: str) -> int:
-    """Вернёт индекс колонки по заголовку. Если нет — создаст новую справа и вернёт её индекс."""
-    header = ws.row_values(1)
-    if header_name in header:
-        return header.index(header_name) + 1
-    col = len(header) + 1
-    ws.update_cell(1, col, header_name)
-    return col
 
-def _find_row_by_name(ws, name: str, name_header: str = "Название") -> int | None:
-    """Вернёт индекс строки (2..N) по названию авто, иначе None."""
-    rows = ws.get_all_values()
-    if not rows:
-        return None
-    header = rows[0]
-    try:
-        name_idx = header.index(name_header)
-    except ValueError:
-        return None
-    for i, r in enumerate(rows[1:], start=2):
-        if name_idx < len(r) and r[name_idx].strip() == name.strip():
-            return i
-    return None
-
-def _find_row_by_id(ws, car_id: str) -> int | None:
-    """Вернёт индекс строки (2..N) по ID (первый столбец), иначе None."""
-    rows = ws.get_all_values()
-    if not rows:
-        return None
-    for i, r in enumerate(rows[1:], start=2):
-        if r and r[0].strip() == car_id.strip():
-            return i
-    return None
-
-def _format_date_with_days(date_str: str) -> str:
-    """
-    "ДД.ММ.ГГГГ" или "ДД.ММ.ГГГГ ЧЧ:ММ" -> "ДД.ММ.ГГГГ (N дней)"
-    Пусто -> "—", ошибки -> "неверный формат".
-    """
-    if not date_str:
-        return "—"
-    s = date_str.strip()
-    try:
-        try:
-            dt = datetime.datetime.strptime(s, "%d.%m.%Y %H:%M")
-        except ValueError:
-            dt = datetime.datetime.strptime(s, "%d.%m.%Y")
-        d = dt.date()
-        today = datetime.date.today()
-        delta = (d - today).days
-        if delta > 0:
-            tail = f"({delta} дней)"
-        elif delta == 0:
-            tail = "(сегодня)"
-        else:
-            tail = f"(просрочено {abs(delta)} дней)"
-        return f"{d.strftime('%d.%m.%Y')} {tail}"
-    except Exception:
-        return "неверный формат"
 
 
 from decimal import Decimal, ROUND_HALF_UP
@@ -337,17 +245,27 @@ def persistent_menu_keyboard():
 
 # Показываем меню (inline кнопки) и добавляем кнопку "Меню" под полем ввода
 async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    inline_keyboard = InlineKeyboardMarkup([
-    [InlineKeyboardButton("📊 Баланс", callback_data="balance")],
-    [InlineKeyboardButton("📥 Доход", callback_data="add_income"),
-     InlineKeyboardButton("📤 Расход", callback_data="add_expense")],
-    [InlineKeyboardButton("🔁 Перевод", callback_data="transfer"),
-     InlineKeyboardButton("🚗 Автомобили", callback_data="cars")],
-    [InlineKeyboardButton("⚙️ Настройки", callback_data="settings")],
-    [InlineKeyboardButton("📈 Отчёт 7 дней", callback_data="report_7"),
-     InlineKeyboardButton("📊 Отчёт 30 дней", callback_data="report_30")],
-])
-
+    inline_keyboard = InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("📊 Баланс", callback_data="balance")],
+            [
+                InlineKeyboardButton("📥 Доход", callback_data="add_income"),
+                InlineKeyboardButton("📤 Расход", callback_data="add_expense"),
+            ],
+            [
+                InlineKeyboardButton("🔁 Перевод", callback_data="transfer"),
+                InlineKeyboardButton("🚗 Автомобили", callback_data="cars")
+            ],
+            [
+                InlineKeyboardButton("🛡 Страховки", callback_data="insurance"),
+                InlineKeyboardButton("🧰 Тех.Осмотры", callback_data="tech"),
+            ],
+            [
+                InlineKeyboardButton("📈 Отчёт 7 дней", callback_data="report_7"),
+                InlineKeyboardButton("📊 Отчёт 30 дней", callback_data="report_30"),
+            ],
+        ]
+    )
     reply_kb = persistent_menu_keyboard()
 
     if update.message:
@@ -373,339 +291,19 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await menu_command(update, context)
         return
 
-    elif data == "income":
-        cats = list_categories("Доход")
-        if not cats:
-            kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("➕ Добавить категорию", callback_data="cat_add|Доход")],
-                [InlineKeyboardButton("⬅️ Назад", callback_data="menu")],
-            ])
-            await query.edit_message_text("Нет категорий дохода.", reply_markup=kb)
-            return
-        buttons = [[InlineKeyboardButton(c["Название"], callback_data=f"income_cat|{c['ID']}")] for c in cats]
-        buttons.append([InlineKeyboardButton("➕ Добавить категорию", callback_data="cat_add|Доход")])
-        buttons.append([InlineKeyboardButton("⬅️ Назад", callback_data="menu")])
-        await query.edit_message_text("Выберите категорию дохода:", reply_markup=InlineKeyboardMarkup(buttons))
-        return
-
-    elif data == "expense":
-        cats = list_categories("Расход")
-        if not cats:
-            kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("➕ Добавить категорию", callback_data="cat_add|Расход")],
-                [InlineKeyboardButton("⬅️ Назад", callback_data="menu")],
-            ])
-            await query.edit_message_text("Нет категорий расхода.", reply_markup=kb)
-            return
-        buttons = [[InlineKeyboardButton(c["Название"], callback_data=f"expense_cat|{c['ID']}")] for c in cats]
-        buttons.append([InlineKeyboardButton("➕ Добавить категорию", callback_data="cat_add|Расход")])
-        buttons.append([InlineKeyboardButton("⬅️ Назад", callback_data="menu")])
-        await query.edit_message_text("Выберите категорию расхода:", reply_markup=InlineKeyboardMarkup(buttons))
-        return
-
-    elif data == "settings":
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📥 Категории дохода", callback_data="cats_income")],
-            [InlineKeyboardButton("📤 Категории расхода", callback_data="cats_expense")],
-            [InlineKeyboardButton("⬅️ Назад", callback_data="menu")],
-        ])
-        await query.edit_message_text("⚙️ Настройки:", reply_markup=kb)
-        return
-    
-    elif data == "settings":
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📥 Категории дохода",  callback_data="cats_income")],
-            [InlineKeyboardButton("📤 Категории расхода", callback_data="cats_expense")],
-            [InlineKeyboardButton("⬅️ Назад", callback_data="menu")],
-        ])
-        await query.edit_message_text("⚙️ Настройки:", reply_markup=kb)
-        return
-
-    async def _show_categories_view(query, kind: str):
-        cats = list_categories(kind)
-        buttons = [[InlineKeyboardButton(c["Название"], callback_data=f"cat_edit|{c['ID']}")] for c in cats]
-        buttons.append([InlineKeyboardButton("➕ Добавить категорию", callback_data=f"cat_add|{kind}")])
-        buttons.append([InlineKeyboardButton("⬅️ Назад", callback_data="settings")])
-        await query.edit_message_text(
-            f"{'📥' if kind=='Доход' else '📤'} Категории {kind.lower()}:",
-            reply_markup=InlineKeyboardMarkup(buttons)
+    if data == "add_income":
+        data = "income"
+        context.user_data.clear()
+        context.user_data["action"] = "income_category"
+        keyboard = InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton("Franky", callback_data="cat_franky")],
+                [InlineKeyboardButton("Fraiz", callback_data="cat_fraiz")],
+                [InlineKeyboardButton("Другое", callback_data="cat_other")],
+                [InlineKeyboardButton("❌ Отмена", callback_data="cancel")],
+            ]
         )
-
-    elif data == "cats_income":
-        await _show_categories_view(query, "Доход")
-        return
-
-    elif data == "cats_expense":
-        await _show_categories_view(query, "Расход")
-        return
-
-    elif data == "cars_edit":
-        # список всех машин по названию
-        try:
-            client = get_gspread_client()
-            ws = client.open_by_key(SPREADSHEET_ID).worksheet("Автомобили")
-            rows = ws.get_all_values()
-            if not rows or len(rows) < 2:
-                kb = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="cars")]])
-                await query.edit_message_text("Список пуст.", reply_markup=kb)
-                return
-
-            header, body = rows[0], rows[1:]
-            try:
-                name_idx = header.index("Название")
-            except ValueError:
-                kb = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="cars")]])
-                await query.edit_message_text("Не найдена колонка «Название».", reply_markup=kb)
-                return
-
-            # Кнопки по именам
-            btns = []
-            for r in body:
-                if name_idx < len(r) and r[name_idx].strip():
-                    name = r[name_idx].strip()
-                    btns.append([InlineKeyboardButton(name, callback_data=f"editcar_select|{name}")])
-
-            btns.append([InlineKeyboardButton("⬅️ Назад", callback_data="cars")])
-            await query.edit_message_text("Выберите автомобиль для редактирования:", reply_markup=InlineKeyboardMarkup(btns))
-        except Exception as e:
-            logger.error(f"cars_edit error: {e}")
-            await query.message.reply_text("⚠️ Не удалось загрузить список.")
-        return
-
-    elif data.startswith("car_extend:"):
-        car_id = data.split(":", 1)[1]
-
-        client = get_gspread_client()
-        ws = client.open_by_key(SPREADSHEET_ID).worksheet("Автомобили")
-
-        row_idx = _find_row_by_id(ws, car_id)
-        if not row_idx:
-            await query.edit_message_text("❌ Машина не найдена.")
-            return
-
-        rows = ws.get_all_values()
-        header = rows[0]
-        idx = {h.strip(): i for i, h in enumerate(header)}
-        name_col = idx.get("Название")
-        car_name = rows[row_idx-1][name_col].strip() if name_col is not None else car_id
-
-        context.user_data["action"] = "extend_contract"
-        context.user_data["car_id"] = car_id
-        context.user_data["car_name"] = car_name
-
-        await query.edit_message_text(
-            f"Введите новую дату окончания договора для *{car_name}* (например 20.11.2025):",
-            parse_mode="Markdown"
-        )
-        return
-
-     # --- Добавить категорию ---
-    elif data.startswith("cat_add|"):
-        kind = data.split("|", 1)[1]  # "Доход" или "Расход"
-        context.user_data["action"] = "cat_add"
-        context.user_data["kind"] = kind
-        await query.edit_message_text(
-            f"Введите название новой категории для {kind.lower()}:",
-            parse_mode="Markdown"
-        )
-        return
-
-    # --- Меню одной категории ---
-    elif data.startswith("cat_edit|"):
-        cat_id = data.split("|", 1)[1]
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✏️ Переименовать",           callback_data=f"cat_rename|{cat_id}")],
-            [InlineKeyboardButton("🙈 Скрыть (выключить)",       callback_data=f"cat_disable|{cat_id}")],
-            [InlineKeyboardButton("🗑 Удалить",               callback_data=f"cat_delete|{cat_id}")],
-            [InlineKeyboardButton("⬅️ Назад",                   callback_data="settings")],
-        ])
-        await query.edit_message_text("Выберите действие с категорией:", reply_markup=kb)
-        return
-
-    # --- Скрыть категорию ---
-    elif data.startswith("cat_disable|"):
-        cat_id = data.split("|", 1)[1]
-        set_category_active(cat_id, False)
-        await query.edit_message_text("🙈 Категория скрыта. Перейдите назад, чтобы обновить список.")
-        return
-
-    # --- Переименовать (запрос текста) ---
-    elif data.startswith("cat_rename|"):
-        cat_id = data.split("|", 1)[1]
-        context.user_data["action"] = "cat_rename"
-        context.user_data["cat_id"] = cat_id
-        await query.edit_message_text("Введите новое название категории:")
-        return
-   
-
-    elif data.startswith("editcar_select|"):
-        name = data.split("|", 1)[1]
-        context.user_data["edit_car_name"] = name
-
-        try:
-            client = get_gspread_client()
-            ws = client.open_by_key(SPREADSHEET_ID).worksheet("Автомобили")
-
-            row_idx = _find_row_by_name(ws, name)
-            if not row_idx:
-                await query.edit_message_text(
-                    "🚫 Автомобиль не найден.",
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="cars_edit")]])
-                )
-                return
-
-            header = ws.row_values(1)
-            row    = ws.row_values(row_idx)
-
-            def get_col(label: str) -> str:
-                return row[header.index(label)].strip() if label in header and header.index(label) < len(row) else ""
-
-            car_id       = get_col("ID")  # нужен для надёжных апдейтов
-            vin          = get_col("VIN")
-            plate        = get_col("Номер")
-            driver       = get_col("Водитель") or "—"
-            driver_phone = get_col("Телефон водителя") or "—"
-            contract     = get_col("Договор до")
-            contract_fmt = _format_date_with_days(contract) if contract else "—"
-
-            text = (
-                f"🚘 *{name}*\n"
-                f"🔑 _VIN:_ `{vin}`\n"
-                f"🔖 _Номер:_ `{plate}`\n"
-                f"👤 _Водитель:_ {driver}\n"
-                f"📞 _Телефон:_ {driver_phone}\n"
-                f"📃 _Договор:_ {contract_fmt}\n\n"
-                "Что редактировать?"
-            )
-
-            # если есть хотя бы одно поле водителя — показываем «Сменить» + «Продлить», иначе «Добавить»
-            has_driver = (driver != "—") or (driver_phone != "—") or bool(contract)
-
-            if has_driver:
-                driver_rows = [
-                    [InlineKeyboardButton("⏩ Продлить договор", callback_data=f"car_extend:{car_id}")],  # продление по ID оставляем
-                    [InlineKeyboardButton("🔁 Сменить водителя", callback_data="editcar_driver_menu")],  # БЕЗ параметров
-                ]
-            else:
-                driver_rows = [
-                    [InlineKeyboardButton("👤 Добавить водителя", callback_data="editcar_driver")],       # БЕЗ параметров
-                ]
-
-            kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🛡️ Страховка", callback_data="editcar_field|insurance")],
-                [InlineKeyboardButton("🧰 Техосмотр",   callback_data="editcar_field|tech")],
-                *driver_rows,
-                [InlineKeyboardButton("🗑 Удалить машину", callback_data="editcar_delete_confirm")],      # БЕЗ параметров
-                [InlineKeyboardButton("⬅️ Назад", callback_data="cars_edit")],
-            ])
-            await query.edit_message_text(text, reply_markup=kb, parse_mode="Markdown")
-        except Exception as e:
-            logger.error(f"editcar_select fetch error: {e}")
-            await query.message.reply_text("⚠️ Не удалось загрузить данные авто.")
-        return
-
-    elif data == "editcar_driver_menu":
-        # показываем меню действий с текущим водителем
-        name = context.user_data.get("edit_car_name", "")
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔁 Сменить водителя", callback_data="editcar_driver_change")],
-            [InlineKeyboardButton("🗑 Удалить водителя", callback_data="editcar_driver_delete_confirm")],
-            [InlineKeyboardButton("⬅️ Назад", callback_data=f"editcar_select|{name}")],
-        ])
-        await query.edit_message_text(f"🚘 {name}\nЧто сделать с водителем?", reply_markup=kb)
-        return
-
-    elif data == "editcar_driver_change":
-        # запускаем тот же мастер (имя → телефон → дата)
-        name = context.user_data.get("edit_car_name", "")
-        context.user_data["action"] = "edit_car"
-        context.user_data["step"] = "edit_driver_name"
-        await query.edit_message_text(
-            f"🚘 {name}\nВведите имя нового водителя:", reply_markup=cancel_keyboard()
-        )
-        return
-
-    elif data == "editcar_driver_delete_confirm":
-        name = context.user_data.get("edit_car_name", "")
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ Да, удалить водителя", callback_data="editcar_driver_delete_yes")],
-            [InlineKeyboardButton("⬅️ Отмена", callback_data=f"editcar_select|{name}")],
-        ])
-        await query.edit_message_text(f"Удалить водителя у «{name}»? Будут очищены имя, телефон и дата договора.", reply_markup=kb)
-        return
-
-    elif data == "editcar_driver_delete_yes":
-        try:
-            client = get_gspread_client()
-            ws = client.open_by_key(SPREADSHEET_ID).worksheet("Автомобили")
-            name = context.user_data.get("edit_car_name", "")
-            row_idx = _find_row_by_name(ws, name)
-            if not row_idx:
-                await query.edit_message_text("🚫 Автомобиль не найден.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="cars_edit")]]))
-                return
-
-            col_driver        = _ensure_column(ws, "Водитель")
-            col_driver_phone  = _ensure_column(ws, "Телефон водителя")
-            col_contract_till = _ensure_column(ws, "Договор до")
-
-            ws.update_cell(row_idx, col_driver,        "")
-            ws.update_cell(row_idx, col_driver_phone,  "")
-            ws.update_cell(row_idx, col_contract_till, "")
-
-            kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("⬅️ К редактированию", callback_data="cars_edit")],
-                [InlineKeyboardButton("⬅️ К списку", callback_data="cars")],
-            ])
-            await query.edit_message_text("✅ Водитель удалён (имя, телефон, договор очищены).", reply_markup=kb)
-        except Exception as e:
-            logger.error(f"delete driver error: {e}")
-            await query.message.reply_text("⚠️ Не удалось удалить водителя.")
-        return    
-
-    elif data.startswith("editcar_field|"):
-        field = data.split("|", 1)[1]   # insurance | tech
-        context.user_data["action"] = "edit_car"
-        context.user_data["step"] = f"edit_{field}"
-        prompt = "Введите дату страховки (ДД.ММ.ГГГГ):" if field == "insurance" else "Введите дату техосмотра (ДД.ММ.ГГГГ):"
-        await query.edit_message_text(prompt, reply_markup=cancel_keyboard())
-        return
-
-    elif data == "editcar_delete_confirm":
-        name = context.user_data.get("edit_car_name", "-")
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ Да, удалить", callback_data="editcar_delete_yes")],
-            [InlineKeyboardButton("⬅️ Отмена", callback_data="cars_edit")],
-        ])
-        await query.edit_message_text(f"Удалить «{name}» безвозвратно?", reply_markup=kb)
-        return
-
-    elif data == "editcar_delete_yes":
-        try:
-            client = get_gspread_client()
-            ws = client.open_by_key(SPREADSHEET_ID).worksheet("Автомобили")
-            row_idx = _find_row_by_name(ws, context.user_data.get("edit_car_name", ""))
-            if not row_idx:
-                await query.edit_message_text("Авто не найдено.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="cars_edit")]]))
-                return
-            ws.delete_rows(row_idx)
-            context.user_data.pop("edit_car_name", None)
-            kb = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ К списку", callback_data="cars")]])
-            await query.edit_message_text("✅ Машина удалена.", reply_markup=kb)
-        except Exception as e:
-            logger.error(f"delete car error: {e}")
-            await query.message.reply_text("⚠️ Не удалось удалить.")
-        return   
-
-    elif data == "editcar_driver":
-        # старт мастера добавления водителя
-        name = context.user_data.get("edit_car_name", "")
-        context.user_data["action"] = "edit_car"
-        context.user_data["step"] = "edit_driver_name"
-        await query.edit_message_text(
-            f"🚘 {name}\nВведите имя водителя:",
-            reply_markup=cancel_keyboard()
-        )
-        return     
+        await query.edit_message_text("Выберите категорию дохода:", reply_markup=keyboard)
 
     elif data in ["cat_franky", "cat_fraiz", "cat_other"]:
         category_map = {
@@ -717,6 +315,13 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["category"] = category_map[data]
         context.user_data["step"] = "amount"
         await query.edit_message_text("Введите сумму дохода:", reply_markup=cancel_keyboard())
+
+    elif data == "add_expense":
+        data = "expense"
+        context.user_data.clear()
+        context.user_data["action"] = "expense"
+        context.user_data["step"] = "amount"
+        await query.edit_message_text("Введите сумму расхода:", reply_markup=cancel_keyboard())
 
     elif data == "source_card":
         context.user_data["source"] = "Карта"
@@ -770,33 +375,26 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     vin   = g(r, "VIN") or "-"
                     plate = g(r, "Номер") or "-"
 
-                    ins_left  = _format_date_with_days(g(r, "Страховка до"))
-                    tech_left = _format_date_with_days(g(r, "ТО до"))
-                    driver = g(r, "Водитель") or "—"
-                    driver_phone = g(r, "Телефон водителя") or "—"
-                    contract_str = _format_date_with_days(g(r, "Договор до"))  # 12.11.2025 (30 дней)
+                    # заглушки — позже подставим реальные даты/расчёт
+                    ins_left  = "—"
+                    tech_left = "—"
 
                     card = (
                         f"🚘 *{name}*\n"
                         f"🔑 _VIN:_ `{vin}`\n"
                         f"🔖 _Номер:_ `{plate}`\n"
-                        f"🛡️ _Страховка:_ {_format_date_with_days(g(r, 'Страховка до'))}\n"
-                        f"🧰 _Техосмотр:_ {_format_date_with_days(g(r, 'ТО до'))}\n"
-                        f"👤 _Водитель:_ {driver}\n"
-                        f"📞 _Телефон:_ {driver_phone}\n"
-                        f"📃 _Договор:_ {contract_str}"
+                        f"🛡️ _Страховка:_ —\n"
+                        f"🧰 _Техосмотр:_ —"
                     )
                     cards.append(card)
 
-                separator = "─" * 35  # ← длина линии (поменяй на сколько хочешь)
-                text = "🚗 *Автомобили:*\n\n" + f"\n{separator}\n".join(cards)
-
+                text = "🚗 *Автомобили:*\n\n" + ("\n──────────\n".join(cards) if cards else "Список пуст.")
 
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("➕ Создать автомобиль", callback_data="create_car")],
-                [InlineKeyboardButton("✏️ Редактировать", callback_data="cars_edit")],
                 [InlineKeyboardButton("⬅️ Назад", callback_data="menu")],
             ])
+            # важное: включаем Markdown, чтобы заголовок был жирным и эмодзи корректно отображались
             await query.edit_message_text(text, reply_markup=keyboard, parse_mode="Markdown")
 
         except Exception as e:
@@ -804,26 +402,107 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("⚠️ Не удалось загрузить список «Автомобили».")
 
 
-    elif data == "create_car":
-        # старт мастера создания авто
-        context.user_data.clear()
-        context.user_data["action"] = "create_car"
-        context.user_data["step"] = "car_name"
+    elif data == "insurance":
         try:
-            await query.edit_message_text(
-                "Введите *название авто* (например: Mazda 3):",
-                reply_markup=cancel_keyboard(),
-                parse_mode="Markdown",
+            sheet = get_gspread_client().open_by_key(SPREADSHEET_ID).worksheet("Страховки")
+            rows = sheet.get_all_values()[1:]
+            if not rows:
+                await query.edit_message_text(
+                    "🚗 Страховки не найдены.",
+                    reply_markup=InlineKeyboardMarkup(
+                        [[InlineKeyboardButton("⬅️ Назад", callback_data="menu")]]
+                    ),
+                )
+                return
+
+            text = "🚗 Страховки:\n"
+            today = datetime.datetime.now().date()
+            for i, row in enumerate(rows):
+                name = row[0]
+                date_str = row[1] if len(row) > 1 else None
+                days_left = "—"
+                if date_str:
+                    try:
+                        deadline = datetime.datetime.strptime(date_str, "%d.%m.%Y").date()
+                        delta = (deadline - today).days
+                        if delta > 0:
+                            days_left = f"осталось {delta} дней"
+                        elif delta == 0:
+                            days_left = "сегодня"
+                        else:
+                            days_left = f"просрочено на {abs(delta)} дней"
+                    except ValueError:
+                        days_left = "неверный формат даты"
+                text += f"{i+1}. {name} до {date_str or '—'} ({days_left})\n"
+
+            keyboard = InlineKeyboardMarkup(
+                [
+                    [InlineKeyboardButton("✏️ Изменить", callback_data="edit_insurance")],
+                    [InlineKeyboardButton("⬅️ Назад", callback_data="menu")],
+                ]
             )
+            await query.edit_message_text(text, reply_markup=keyboard)
         except Exception as e:
-            # если редактирование нельзя – отправим обычным сообщением
-            logger.error(f"create_car edit failed: {e}")
-            await query.message.reply_text(
-                "Введите *название авто* (например: Mazda 3):",
-                reply_markup=cancel_keyboard(),
-                parse_mode="Markdown",
+            logger.error(f"Ошибка страховок: {e}")
+            await query.message.reply_text("⚠️ Не удалось получить данные по страховкам.")
+
+    elif data == "tech":
+        try:
+            sheet = get_gspread_client().open_by_key(SPREADSHEET_ID).worksheet("ТехОсмотры")
+            rows = sheet.get_all_values()[1:]
+            if not rows:
+                await query.edit_message_text(
+                    "🧰 Тех.Осмотры не найдены.",
+                    reply_markup=InlineKeyboardMarkup(
+                        [[InlineKeyboardButton("⬅️ Назад", callback_data="menu")]]
+                    ),
+                )
+                return
+
+            text = "🧰 Тех.Осмотры:\n"
+            today = datetime.datetime.now().date()
+            for i, row in enumerate(rows):
+                name = row[0]
+                date_str = row[1] if len(row) > 1 else None
+                days_left = "—"
+                if date_str:
+                    try:
+                        deadline = datetime.datetime.strptime(date_str, "%d.%m.%Y").date()
+                        delta = (deadline - today).days
+                        if delta > 0:
+                            days_left = f"осталось {delta} дней"
+                        elif delta == 0:
+                            days_left = "сегодня"
+                        else:
+                            days_left = f"просрочено на {abs(delta)} дней"
+                    except ValueError:
+                        days_left = "неверный формат даты"
+                text += f"{i+1}. {name} до {date_str or '—'} ({days_left})\n"
+
+            keyboard = InlineKeyboardMarkup(
+                [
+                    [InlineKeyboardButton("✏️ Изменить", callback_data="edit_tech")],
+                    [InlineKeyboardButton("⬅️ Назад", callback_data="menu")],
+                ]
             )
-        return
+            await query.edit_message_text(text, reply_markup=keyboard)
+        except Exception as e:
+            logger.error(f"Ошибка тех.осмотров: {e}")
+            await query.message.reply_text("⚠️ Не удалось получить данные по тех.осмотрам.")
+
+    elif data == "edit_insurance":
+        context.user_data["edit_type"] = "insurance"
+        await query.edit_message_text(
+            "Введите название машины и дату через тире (Пример: Toyota - 01.09.2025)",
+            reply_markup=cancel_keyboard(),
+        )
+
+    elif data == "edit_tech":
+        context.user_data["edit_type"] = "tech"
+        await query.edit_message_text(
+            "Введите название машины и дату через тире (Пример: BMW - 15.10.2025)",
+            reply_markup=cancel_keyboard(),
+        )
 
     elif data == "balance":
         try:
@@ -1044,122 +723,6 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
         await menu_command(update, context)
         return
 
-    # --- Добавление категории (из настроек) ---
-    if context.user_data.get("action") == "cat_add":
-        kind = context.user_data.get("kind")
-        name = (update.message.text or "").strip()
-        if not name:
-            await update.message.reply_text("❌ Название не может быть пустым. Введите ещё раз:")
-            return
-        try:
-            add_category(kind, name)
-            context.user_data.clear()
-            # показать список категорий обратно
-            await update.message.reply_text(f"✅ Категория добавлена: {name}")
-            # имитируем «вернуться» в нужный список
-            dummy = types.SimpleNamespace() if 'types' in globals() else None
-            await update.message.reply_text("Открываю список категорий…")
-            # Если у тебя показ списков только через callback, просто попроси нажать «Категории …» ещё раз.
-        except Exception as e:
-            logger.error(f"cat_add error: {e}")
-            await update.message.reply_text("⚠️ Не удалось добавить категорию. Проверьте лист 'Категории'.")
-        return
-
-    # --- Переименование категории ---
-    if context.user_data.get("action") == "cat_rename":
-        cat_id = context.user_data.get("cat_id")
-        new_name = (update.message.text or "").strip()
-        if not new_name:
-            await update.message.reply_text("❌ Название не может быть пустым. Введите ещё раз:")
-            return
-        try:
-            rename_category(cat_id, new_name)
-            context.user_data.clear()
-            await update.message.reply_text(f"✅ Переименовано: {new_name}")
-        except Exception as e:
-            logger.error(f"cat_rename error: {e}")
-            await update.message.reply_text("⚠️ Не удалось переименовать категорию.")
-        return
-
-    # --- Продление договора: ожидание даты ---
-    if context.user_data.get("action") == "extend_contract":
-        car_id = context.user_data.get("car_id")
-        car_name = context.user_data.get("car_name", car_id)
-        new_date = (update.message.text or "").strip()
-
-        client = get_gspread_client()
-        ws = client.open_by_key(SPREADSHEET_ID).worksheet("Автомобили")
-
-        row_idx = _find_row_by_id(ws, car_id)
-        if not row_idx:
-            await update.message.reply_text("❌ Машина не найдена.")
-            context.user_data.clear()
-            return
-
-        rows = ws.get_all_values()
-        header = rows[0]
-        idx = {h.strip(): i for i, h in enumerate(header)}
-        col_contract = idx.get("Договор до")
-        if col_contract is None:
-            await update.message.reply_text("❌ В таблице нет колонки «Договор до».")
-            context.user_data.clear()
-            return
-
-        ws.update_cell(row_idx, col_contract + 1, new_date)  # gspread 1-based
-
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("⬅️ Назад в Автомобили", callback_data="cars")],
-            [InlineKeyboardButton("✏️ Редактировать другой авто", callback_data="cars_edit")],
-        ])
-
-        await update.message.reply_text(
-            f"✅ Договор по *{car_name}* продлён до {new_date}.",
-            parse_mode="Markdown",
-            reply_markup=kb
-        )
-        context.user_data.clear()
-        return
-
-    if context.user_data.get("action") == "edit_car":
-        step = context.user_data.get("step")
-        name = context.user_data.get("edit_car_name", "")
-        date_txt = (update.message.text or "").strip()
-
-        if step in ("edit_insurance", "edit_tech"):
-            # простая валидация даты
-            try:
-                try:
-                    d = datetime.datetime.strptime(date_txt, "%d.%m.%Y")
-                except ValueError:
-                    await update.message.reply_text("⚠️ Формат даты: ДД.ММ.ГГГГ")
-                    return
-
-                client = get_gspread_client()
-                ws = client.open_by_key(SPREADSHEET_ID).worksheet("Автомобили")
-
-                row_idx = _find_row_by_name(ws, name)
-                if not row_idx:
-                    await update.message.reply_text("🚫 Автомобиль не найден.")
-                    return
-
-                header = ws.row_values(1)
-                col_name = "Страховка до" if step == "edit_insurance" else "ТО до"
-                col_idx = header.index(col_name) + 1 if col_name in header else _ensure_column(ws, col_name)
-
-                ws.update_cell(row_idx, col_idx, date_txt)
-
-                context.user_data.pop("action", None)
-                context.user_data.pop("step", None)
-
-                kb = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("⬅️ К редактированию", callback_data="cars_edit")],
-                    [InlineKeyboardButton("⬅️ К списку", callback_data="cars")],
-                ])
-                await update.message.reply_text(f"✅ Обновлено: {col_name} = {date_txt} для «{name}».", reply_markup=kb)
-            except Exception as e:
-                logger.error(f"edit insurance/tech error: {e}")
-                await update.message.reply_text("⚠️ Не удалось обновить.")
-            return
     # -------- Режим редактирования дат (страховки/ТО) --------
     if "edit_type" in context.user_data:
         edit_type = context.user_data.pop("edit_type")
@@ -1189,90 +752,6 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
     step = context.user_data.get("step")
     if not action or not step:
         return
-
-    # === Редактирование авто: добавление водителя ===
-    if context.user_data.get("action") == "edit_car":
-        step = context.user_data.get("step")
-        car_name = context.user_data.get("edit_car_name", "")
-        txt = (update.message.text or "").strip()
-
-        # 3.1 Имя водителя
-        if step == "edit_driver_name":
-            if not txt:
-                await update.message.reply_text("⚠️ Введите имя водителя.")
-                return
-            context.user_data["driver_name"] = txt
-            context.user_data["step"] = "edit_driver_phone"
-            await update.message.reply_text("Введите номер телефона водителя (например: +48 600 000 000):",
-                                            reply_markup=cancel_keyboard())
-            return
-
-        # 3.2 Телефон водителя
-        if step == "edit_driver_phone":
-            phone = txt
-            # мягкая валидация (опционально, можно упростить)
-            if len(phone) < 6:
-                await update.message.reply_text("⚠️ Слишком короткий телефон. Попробуйте снова.")
-                return
-            context.user_data["driver_phone"] = phone
-            context.user_data["step"] = "edit_driver_contract"
-            await update.message.reply_text("Введите дату окончания договора (ДД.ММ.ГГГГ):",
-                                            reply_markup=cancel_keyboard())
-            return
-
-        if step == "edit_driver_contract":
-            try:
-                datetime.datetime.strptime(txt, "%d.%m.%Y")
-            except ValueError:
-                await update.message.reply_text("⚠️ Формат даты: ДД.ММ.ГГГГ")
-                return
-
-            try:
-                client = get_gspread_client()
-                ws = client.open_by_key(SPREADSHEET_ID).worksheet("Автомобили")
-                row_idx = _find_row_by_name(ws, car_name)
-                if not row_idx:
-                    await update.message.reply_text("🚫 Автомобиль не найден.")
-                    return
-
-                # гарантируем колонки
-                col_driver        = _ensure_column(ws, "Водитель")
-                col_driver_phone  = _ensure_column(ws, "Телефон водителя")
-                col_contract_till = _ensure_column(ws, "Договор до")
-
-                # Сохраним локально ПРЕЖДЕ чем чистить user_data
-                driver_name  = context.user_data.get("driver_name", "")
-                driver_phone = context.user_data.get("driver_phone", "")
-                contract_till = txt
-
-                # Запись в таблицу
-                ws.update_cell(row_idx, col_driver,        driver_name)
-                ws.update_cell(row_idx, col_driver_phone,  driver_phone)
-                ws.update_cell(row_idx, col_contract_till, contract_till)
-
-                # Очистка состояния
-                context.user_data.pop("action", None)
-                context.user_data.pop("step", None)
-                context.user_data.pop("driver_name", None)
-                context.user_data.pop("driver_phone", None)
-
-                kb = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("⬅️ К редактированию", callback_data="cars_edit")],
-                    [InlineKeyboardButton("⬅️ К списку", callback_data="cars")],
-                ])
-                pretty = _format_date_with_days(contract_till)
-                await update.message.reply_text(
-                    "✅ Водитель добавлен:\n"
-                    f"👤 {driver_name}\n"
-                    f"📞 {driver_phone}\n"
-                    f"📃 Договор: {pretty}",
-                    reply_markup=kb,
-                    parse_mode="Markdown"
-                )
-            except Exception as e:
-                logger.error(f"edit driver error: {e}")
-                await update.message.reply_text("⚠️ Не удалось обновить данные водителя.")
-            return
 
     # -------- Шаг ввода суммы --------
     if step == "amount":
@@ -1528,97 +1007,82 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
             return    
 
 async def check_reminders(app):
-    """
-    Раз в сутки пробегает лист 'Автомобили' и шлёт напоминания по страховке и тех.осмотру.
-    Требуемые заголовки: 'Название', 'Страховка до', 'ТО до'.
-    Если заголовков нет — создадим автоматически.
-    """
-    REMIND_BEFORE_DAYS = 7  # оповещать за N дней
-
     while True:
         try:
             client = get_gspread_client()
-            wb = client.open_by_key(SPREADSHEET_ID)
-            ws = wb.worksheet("Автомобили")
+            now = datetime.datetime.now().date()
+            remind_before_days = 7
 
-            # гарантируем наличие нужных колонок
-            header = ws.row_values(1)
-            if not header:
-                header = []
-            # обеспечим колонки (вернёт индекс 1-based)
-            col_idx_name = _ensure_column(ws, "Название")
-            col_idx_ins  = _ensure_column(ws, "Страховка до")
-            col_idx_tech = _ensure_column(ws, "ТО до")
-            col_idx_contract = _ensure_column(ws, "Договор до")
+            def check_sheet(sheet_name):
+                sheet = client.open_by_key(SPREADSHEET_ID).worksheet(sheet_name)
+                rows = sheet.get_all_values()[1:]  # пропускаем заголовок
+                reminders = []
+                for row in rows:
+                    if len(row) < 2:
+                        continue
+                    car = row[0].strip()
+                    date_str = row[1].strip()
+                    try:
+                        try:
+                            dt = datetime.datetime.strptime(date_str, "%d.%m.%Y %H:%M").date()
+                        except ValueError:
+                            dt = datetime.datetime.strptime(date_str, "%d.%m.%Y").date()
+                    except Exception:
+                        continue
+                    days_left = (dt - now).days
+                    if days_left <= remind_before_days:
+                        reminders.append((car, dt, days_left))
+                
+    elif data == "income":
+        await _show_categories_view(query, "Доход")
+        return
+    elif data == "expense":
+        await _show_categories_view(query, "Расход")
+        return
+    elif data.startswith("income_cat|"):
+        cat_id = data.split("|", 1)[1]
+        cat_name = get_category_name(cat_id)
+        context.user_data.clear()
+        context.user_data["action"] = "income"
+        context.user_data["category_id"] = cat_id
+        context.user_data["category"] = cat_name
+        context.user_data["step"] = "amount"
+        await query.edit_message_text("Введите сумму дохода:", reply_markup=cancel_keyboard())
+        return
+    elif data.startswith("expense_cat|"):
+        cat_id = data.split("|", 1)[1]
+        cat_name = get_category_name(cat_id)
+        context.user_data.clear()
+        context.user_data["action"] = "expense"
+        context.user_data["category_id"] = cat_id
+        context.user_data["category"] = cat_name
+        context.user_data["step"] = "amount"
+        await query.edit_message_text("Введите сумму расхода:", reply_markup=cancel_keyboard())
+        return
+return reminders
 
-            # берём все строки
-            rows = ws.get_all_values()
-            body = rows[1:] if len(rows) > 1 else []
+            insurance_reminders = check_sheet("Страховки")
+            tech_reminders = check_sheet("ТехОсмотры")
 
-            today = datetime.date.today()
+            for car, dt, days_left in insurance_reminders:
+                if days_left < 0:
+                    text = f"🚨 Страховка на *{car}* просрочена! Срочно оплатите и обновите дату."
+                else:
+                    text = f"⏰ Через {days_left} дней заканчивается страховка на *{car}* ({dt.strftime('%d.%m.%Y')})."
+                await app.bot.send_message(chat_id=REMINDER_CHAT_ID, text=text, parse_mode="Markdown")
 
-            for r in body:
-                name = r[col_idx_name - 1].strip() if len(r) >= col_idx_name else ""
-                ins  = r[col_idx_ins  - 1].strip() if len(r) >= col_idx_ins  else ""
-                tech = r[col_idx_tech - 1].strip() if len(r) >= col_idx_tech else ""
-                contract = r[col_idx_contract - 1].strip() if len(r) >= col_idx_contract else ""
+            for car, dt, days_left in tech_reminders:
+                if days_left < 0:
+                    text = f"🚨 Тех.осмотр на *{car}* просрочен! Срочно пройдите тех.осмотр и обновите дату."
+                else:
+                    text = f"⏰ Через {days_left} дней заканчивается тех.осмотр на *{car}* ({dt.strftime('%d.%m.%Y')})."
+                await app.bot.send_message(chat_id=REMINDER_CHAT_ID, text=text, parse_mode="Markdown")
 
-                # --- страховка ---
-                if ins:
-                    label, days = _days_left_label(ins)
-                    if days is not None:
-                        # отправляем, если просрочено / сегодня / в пределах окна
-                        if days < 0:
-                            msg = f"🚨 Страховка на *{name}* просрочена! ({ins}, {label})."
-                            await app.bot.send_message(chat_id=REMINDER_CHAT_ID, text=msg, parse_mode="Markdown")
-                        elif days == 0:
-                            msg = f"⏰ Сегодня истекает страховка на *{name}* ({ins})."
-                            await app.bot.send_message(chat_id=REMINDER_CHAT_ID, text=msg, parse_mode="Markdown")
-                        elif days <= REMIND_BEFORE_DAYS:
-                            msg = f"⏰ Через {days} дней истекает страховка на *{name}* ({ins})."
-                            await app.bot.send_message(chat_id=REMINDER_CHAT_ID, text=msg, parse_mode="Markdown")
-
-                # --- техосмотр ---
-                if tech:
-                    label, days = _days_left_label(tech)
-                    if days is not None:
-                        if days < 0:
-                            msg = f"🚨 Техосмотр на *{name}* просрочен! ({tech}, {label})."
-                            await app.bot.send_message(chat_id=REMINDER_CHAT_ID, text=msg, parse_mode="Markdown")
-                        elif days == 0:
-                            msg = f"⏰ Сегодня истекает техосмотр на *{name}* ({tech})."
-                            await app.bot.send_message(chat_id=REMINDER_CHAT_ID, text=msg, parse_mode="Markdown")
-                        elif days <= REMIND_BEFORE_DAYS:
-                            msg = f"⏰ Через {days} дней истекает техосмотр на *{name}* ({tech})."
-                            await app.bot.send_message(chat_id=REMINDER_CHAT_ID, text=msg, parse_mode="Markdown")
-
-                if contract:
-                    label, days = _days_left_label(contract)
-                    if days is not None:
-                        if days < 0:
-                            msg = (
-                                f"📃🤝 *Договор аренды* по *{name}* истёк!\n"
-                                f"⏱ Был до: {contract} ({label})."
-                            )
-                            await app.bot.send_message(chat_id=REMINDER_CHAT_ID, text=msg, parse_mode="Markdown")
-                        elif days == 0:
-                            msg = (
-                                f"📃🤝 Сегодня истекает *договор аренды* по *{name}*.\n"
-                                f"⏱ Дата: {contract}."
-                            )
-                            await app.bot.send_message(chat_id=REMINDER_CHAT_ID, text=msg, parse_mode="Markdown")
-                        elif days <= REMIND_BEFORE_DAYS:
-                            msg = (
-                                f"📃🤝 Через {days} дней истекает *договор аренды* по *{name}*.\n"
-                                f"⏱ До: {contract}."
-                            )
-                            await app.bot.send_message(chat_id=REMINDER_CHAT_ID, text=msg, parse_mode="Markdown")
-     
         except Exception as e:
             logger.error(f"Ошибка при проверке напоминаний: {e}")
 
-        # спим 24 часа (можно уменьшить до 6–12, если хочешь чаще)
-        await asyncio.sleep(86400)
+        await asyncio.sleep(86400)  # Ждем 24 часа
+
 
 async def on_startup(app):
     asyncio.create_task(check_reminders(app))
