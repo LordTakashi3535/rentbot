@@ -429,6 +429,10 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await menu_command(update, context)
         return
 
+    action = context.user_data.get("action")
+    step   = context.user_data.get("step")
+    text   = (update.message.text or "").strip()
+
     elif data == "income":
         cats = list_categories("Доход")
         if not cats:
@@ -1454,7 +1458,6 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
             # Источник уже выбран → сразу переходим к описанию
             context.user_data["step"] = "description"
             await update.message.reply_text("Добавьте описание (или '-' если без описания):")
-
 
         except Exception:
             await update.message.reply_text("⚠️ Введите положительное число (пример: 1200.50)")
