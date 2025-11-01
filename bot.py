@@ -432,14 +432,19 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "income":
         cats = list_categories("Доход")
         if not cats:
+            # тихо ставим дефолт «Другое» и идём сразу к выбору источника
             cat_id, cat_name = ensure_default_category("Доход")
             context.user_data.clear()
-            context.user_data["flow"] = "income"
+            context.user_data["action"] = "income"
             context.user_data["category_id"] = cat_id
             context.user_data["category"] = cat_name
-            context.user_data["step"] = "amount_card"
-            await query.edit_message_text("Категорий нет. Использую *Другое*.\nВведите сумму *по карте* (0 если нет):",
-                                        parse_mode="Markdown")
+            context.user_data["step"] = "source"  # сначала источник
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("💳 Карта",    callback_data="source_card")],
+                [InlineKeyboardButton("💵 Наличные", callback_data="source_cash")],
+                [InlineKeyboardButton("❌ Отмена",   callback_data="cancel")],
+            ])
+            await query.edit_message_text("Выберите источник:", reply_markup=kb)
             return
         await _show_categories_view(query, "Доход")
         return
@@ -449,12 +454,16 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not cats:
             cat_id, cat_name = ensure_default_category("Расход")
             context.user_data.clear()
-            context.user_data["flow"] = "expense"
+            context.user_data["action"] = "expense"
             context.user_data["category_id"] = cat_id
             context.user_data["category"] = cat_name
-            context.user_data["step"] = "amount_card"
-            await query.edit_message_text("Категорий нет. Использую *Другое*.\nВведите сумму *по карте* (0 если нет):",
-                                        parse_mode="Markdown")
+            context.user_data["step"] = "source"
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("💳 Карта",    callback_data="source_card")],
+                [InlineKeyboardButton("💵 Наличные", callback_data="source_cash")],
+                [InlineKeyboardButton("❌ Отмена",   callback_data="cancel")],
+            ])
+            await query.edit_message_text("Выберите источник:", reply_markup=kb)
             return
         await _show_categories_view(query, "Расход")
         return
@@ -463,22 +472,32 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cat_id = data.split("|", 1)[1]
         cat_name = get_category_name(cat_id)
         context.user_data.clear()
-        context.user_data["flow"] = "income"
+        context.user_data["action"] = "income"
         context.user_data["category_id"] = cat_id
         context.user_data["category"] = cat_name
-        context.user_data["step"] = "amount_card"
-        await query.edit_message_text("Введите сумму *по карте* (0 если нет):", parse_mode="Markdown")
+        context.user_data["step"] = "source"  # сначала источник
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("💳 Карта",    callback_data="source_card")],
+            [InlineKeyboardButton("💵 Наличные", callback_data="source_cash")],
+            [InlineKeyboardButton("❌ Отмена",   callback_data="cancel")],
+        ])
+        await query.edit_message_text("Выберите источник:", reply_markup=kb)
         return
 
     elif data.startswith("expense_cat|"):
         cat_id = data.split("|", 1)[1]
         cat_name = get_category_name(cat_id)
         context.user_data.clear()
-        context.user_data["flow"] = "expense"
+        context.user_data["action"] = "expense"
         context.user_data["category_id"] = cat_id
         context.user_data["category"] = cat_name
-        context.user_data["step"] = "amount_card"
-        await query.edit_message_text("Введите сумму *по карте* (0 если нет):", parse_mode="Markdown")
+        context.user_data["step"] = "source"
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("💳 Карта",    callback_data="source_card")],
+            [InlineKeyboardButton("💵 Наличные", callback_data="source_cash")],
+            [InlineKeyboardButton("❌ Отмена",   callback_data="cancel")],
+        ])
+        await query.edit_message_text("Выберите источник:", reply_markup=kb)
         return
 
     elif data.startswith("cat_add|"):
@@ -720,16 +739,15 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "source_card":
         context.user_data["source"] = "Карта"
-        context.user_data["step"] = "description"
-        await query.edit_message_text("Добавьте описание (или '-' если без описания):")
+        context.user_data["step"] = "amount"  # теперь просим сумму
+        await query.edit_message_text("Введите сумму:")
         return
 
     elif data == "source_cash":
         context.user_data["source"] = "Наличные"
-        context.user_data["step"] = "description"
-        await query.edit_message_text("Добавьте описание (или '-' если без описания):")
+        context.user_data["step"] = "amount"
+        await query.edit_message_text("Введите сумму:")
         return
-
 
     elif data == "transfer":
         # Start transfer flow: ask direction
@@ -1433,14 +1451,10 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
                     await update.message.reply_text("⚠️ Не удалось выполнить перевод.")
                 return
 
-            # ---- ДОХОД/РАСХОД: перейти к выбору источника ----
-            context.user_data["step"] = "source"
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("💳 Карта",    callback_data="source_card")],
-                [InlineKeyboardButton("💵 Наличные", callback_data="source_cash")],
-                [InlineKeyboardButton("❌ Отмена",   callback_data="cancel")],
-            ])
-            await update.message.reply_text("Выберите источник:", reply_markup=keyboard)
+            # Источник уже выбран → сразу переходим к описанию
+            context.user_data["step"] = "description"
+            await update.message.reply_text("Добавьте описание (или '-' если без описания):")
+
 
         except Exception:
             await update.message.reply_text("⚠️ Введите положительное число (пример: 1200.50)")
