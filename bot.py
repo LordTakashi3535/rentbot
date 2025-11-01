@@ -913,9 +913,16 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
             return
 
         ws.update_cell(row_idx, col_contract + 1, new_date)  # gspread 1-based
+
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ Назад в Автомобили", callback_data="cars")],
+            [InlineKeyboardButton("✏️ Редактировать другой авто", callback_data="cars_edit")],
+        ])
+
         await update.message.reply_text(
             f"✅ Договор по *{car_name}* продлён до {new_date}.",
-            parse_mode="Markdown"
+            parse_mode="Markdown",
+            reply_markup=kb
         )
         context.user_data.clear()
         return
