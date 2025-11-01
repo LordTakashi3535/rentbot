@@ -61,6 +61,17 @@ def _find_row_by_name(ws, name: str, name_header: str = "Название") -> i
         if name_idx < len(r) and r[name_idx].strip() == name.strip():
             return i
     return None
+
+def _find_row_by_id(ws, car_id: str) -> int | None:
+    """Вернёт индекс строки (2..N) по ID (первый столбец), иначе None."""
+    rows = ws.get_all_values()
+    if not rows:
+        return None
+    for i, r in enumerate(rows[1:], start=2):
+        if r and r[0].strip() == car_id.strip():
+            return i
+    return None
+
 def _format_date_with_days(date_str: str) -> str:
     """
     "ДД.ММ.ГГГГ" или "ДД.ММ.ГГГГ ЧЧ:ММ" -> "ДД.ММ.ГГГГ (N дней)"
@@ -338,6 +349,33 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("⚠️ Не удалось загрузить список.")
         return
 
+    elif data.startswith("car_extend:"):
+        car_id = data.split(":", 1)[1]
+
+        client = get_gspread_client()
+        ws = client.open_by_key(SPREADSHEET_ID).worksheet("Автомобили")
+
+        row_idx = _find_row_by_id(ws, car_id)
+        if not row_idx:
+            await query.edit_message_text("❌ Машина не найдена.")
+            return
+
+        rows = ws.get_all_values()
+        header = rows[0]
+        idx = {h.strip(): i for i, h in enumerate(header)}
+        name_col = idx.get("Название")
+        car_name = rows[row_idx-1][name_col].strip() if name_col is not None else car_id
+
+        context.user_data["action"] = "extend_contract"
+        context.user_data["car_id"] = car_id
+        context.user_data["car_name"] = car_name
+
+        await query.edit_message_text(
+            f"Введите новую дату окончания договора для *{car_name}* (например 20.11.2025):",
+            parse_mode="Markdown"
+        )
+        return
+
     elif data.startswith("editcar_select|"):
         name = data.split("|", 1)[1]
         context.user_data["edit_car_name"] = name
@@ -360,6 +398,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             def get_col(label: str) -> str:
                 return row[header.index(label)].strip() if label in header and header.index(label) < len(row) else ""
 
+            car_id       = get_col("ID")  # нужен для надёжных апдейтов
             vin          = get_col("VIN")
             plate        = get_col("Номер")
             driver       = get_col("Водитель") or "—"
@@ -377,19 +416,24 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Что редактировать?"
             )
 
-            # если есть хотя бы одно поле водителя — показываем «Сменить водителя», иначе «Добавить»
+            # если есть хотя бы одно поле водителя — показываем «Сменить» + «Продлить», иначе «Добавить»
             has_driver = (driver != "—") or (driver_phone != "—") or bool(contract)
-            driver_btn = (
-                [InlineKeyboardButton("🔁 Сменить водителя", callback_data="editcar_driver_menu")]
-                if has_driver else
-                [InlineKeyboardButton("👤 Добавить водителя", callback_data="editcar_driver")]
-            )
+
+            if has_driver:
+                driver_rows = [
+                    [InlineKeyboardButton("⏩ Продлить договор", callback_data=f"car_extend:{car_id}")],
+                    [InlineKeyboardButton("🔁 Сменить водителя", callback_data=f"editcar_driver_menu|{car_id}")]
+                ]
+            else:
+                driver_rows = [
+                    [InlineKeyboardButton("👤 Добавить водителя", callback_data=f"editcar_driver|{name}")]
+                ]
 
             kb = InlineKeyboardMarkup([
                 [InlineKeyboardButton("🛡️ Страховка", callback_data="editcar_field|insurance")],
                 [InlineKeyboardButton("🧰 Техосмотр", callback_data="editcar_field|tech")],
-                driver_btn,
-                [InlineKeyboardButton("🗑 Удалить машину", callback_data="editcar_delete_confirm")],
+                *driver_rows,
+                [InlineKeyboardButton("🗑 Удалить машину", callback_data=f"editcar_delete_confirm|{name}")],
                 [InlineKeyboardButton("⬅️ Назад", callback_data="cars_edit")],
             ])
             await query.edit_message_text(text, reply_markup=kb, parse_mode="Markdown")
@@ -842,6 +886,38 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
         context.user_data.clear()
         await update.message.reply_text("❌ Отменено.")
         await menu_command(update, context)
+        return
+
+    # --- Продление договора: ожидание даты ---
+    if context.user_data.get("action") == "extend_contract":
+        car_id = context.user_data.get("car_id")
+        car_name = context.user_data.get("car_name", car_id)
+        new_date = (update.message.text or "").strip()
+
+        client = get_gspread_client()
+        ws = client.open_by_key(SPREADSHEET_ID).worksheet("Автомобили")
+
+        row_idx = _find_row_by_id(ws, car_id)
+        if not row_idx:
+            await update.message.reply_text("❌ Машина не найдена.")
+            context.user_data.clear()
+            return
+
+        rows = ws.get_all_values()
+        header = rows[0]
+        idx = {h.strip(): i for i, h in enumerate(header)}
+        col_contract = idx.get("Договор до")
+        if col_contract is None:
+            await update.message.reply_text("❌ В таблице нет колонки «Договор до».")
+            context.user_data.clear()
+            return
+
+        ws.update_cell(row_idx, col_contract + 1, new_date)  # gspread 1-based
+        await update.message.reply_text(
+            f"✅ Договор по *{car_name}* продлён до {new_date}.",
+            parse_mode="Markdown"
+        )
+        context.user_data.clear()
         return
 
     if context.user_data.get("action") == "edit_car":
