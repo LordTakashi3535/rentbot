@@ -7,8 +7,19 @@ import datetime
 import re
 import asyncio
 
+DATE_FMT = "%d.%m.%Y %H:%M"  # как пишем в листы
+
+def _parse_dt_safe(s: str):
+    """Пытаемся распарсить 'ДД.ММ.ГГГГ ЧЧ:ММ' или 'ДД.ММ.ГГГГ'. Возвращаем datetime или None."""
+    s = (s or "").strip()
+    for fmt in (DATE_FMT, "%d.%m.%Y"):
+        try:
+            return datetime.datetime.strptime(s, fmt)
+        except ValueError:
+            pass
+    return None
+
 # === Dynamic Categories & Records ===
-from datetime import date, datetime
 from typing import Optional, List, Dict, Tuple, Union
 
 INCOME_SHEET = "Доход"    # если назвал лист иначе — поменяй тут
@@ -321,12 +332,6 @@ def _fmt_amount(val):
 
 
 def compute_balance(client):
-    """
-    Формулы точно как в листе 'Сводка':
-    - Наличные = СУММ('Доход'!D) - СУММ('Расход'!C)
-    - Карта = INITIAL_BALANCE + СУММ('Доход'!C) - СУММ('Расход'!B)
-    - Баланс = Карта + Наличные
-    """
     income_ws = client.open_by_key(SPREADSHEET_ID).worksheet("Доход")
     expense_ws = client.open_by_key(SPREADSHEET_ID).worksheet("Расход")
 
@@ -336,23 +341,18 @@ def compute_balance(client):
     income_card = Decimal("0")
     income_cash = Decimal("0")
     for r in income_rows:
-        if len(r) > 2:
-            income_card += _to_amount(r[2])
-        if len(r) > 3:
-            income_cash += _to_amount(r[3])
+        if len(r) > 3: income_card += _to_amount(r[3])  # 💳 D
+        if len(r) > 4: income_cash += _to_amount(r[4])  # 💵 E
 
     expense_card = Decimal("0")
     expense_cash = Decimal("0")
     for r in expense_rows:
-        if len(r) > 1:
-            expense_card += _to_amount(r[1])
-        if len(r) > 2:
-            expense_cash += _to_amount(r[2])
+        if len(r) > 3: expense_card += _to_amount(r[3])  # 💳 D
+        if len(r) > 4: expense_cash += _to_amount(r[4])  # 💵 E
 
-    # Формулы как в листе 'Сводка'
-    cash_bal_display = income_cash - expense_cash  # = SUM(Доход!D) - SUM(Расход!C)
-    card_bal_display = INITIAL_BALANCE + income_card - expense_card  # = INITIAL + SUM(Доход!C) - SUM(Расход!B)
-    total_bal = card_bal_display + cash_bal_display  # = Карта + Наличные
+    cash_bal_display = income_cash - expense_cash
+    card_bal_display = INITIAL_BALANCE + income_card - expense_card
+    total_bal = card_bal_display + cash_bal_display
 
     return {
         "Баланс": total_bal,
