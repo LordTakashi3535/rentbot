@@ -7,10 +7,6 @@ import datetime
 import re
 import asyncio
 
-from telegram.ext import MessageHandler, filters
-application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_amount_description))
-
-
 # === Dynamic Categories & Records ===
 from datetime import date, datetime
 from typing import Optional, List, Dict, Tuple, Union
