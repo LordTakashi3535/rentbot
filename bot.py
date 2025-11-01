@@ -429,10 +429,6 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await menu_command(update, context)
         return
 
-    action = context.user_data.get("action")
-    step   = context.user_data.get("step")
-    text   = (update.message.text or "").strip()
-
     elif data == "income":
         cats = list_categories("Доход")
         if not cats:
@@ -1470,11 +1466,28 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
         now = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
 
         amount   = context.user_data.get("amount")
-        source   = context.user_data.get("source", "-")
+        source   = context.user_data.get("source", "").strip()
         cat_id   = context.user_data.get("category_id")
         cat_name = context.user_data.get("category")
 
-        # Если категория не выбрана (например, пришли сразу в доход/расход) — используем дефолт «Другое»
+        # ✅ Защита: если почему-то не выбрали источник — вернём пользователя на выбор
+        if source not in ("Карта", "Наличные"):
+            context.user_data["step"] = "source"
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("💳 Карта",    callback_data="source_card")],
+                [InlineKeyboardButton("💵 Наличные", callback_data="source_cash")],
+                [InlineKeyboardButton("❌ Отмена",   callback_data="cancel")],
+            ])
+            await update.message.reply_text("Выберите источник:", reply_markup=kb)
+            return
+
+        # ✅ Защита: сумма должна быть
+        if amount is None:
+            context.user_data["step"] = "amount"
+            await update.message.reply_text("Введите сумму:")
+            return
+
+        # Если категория не выбрана — используем дефолт «Другое»
         try:
             if not cat_id or not cat_name:
                 if action == "income":
@@ -1488,8 +1501,7 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
         try:
             client = get_gspread_client()
 
-            # Новые форматы строк:
-            # Доход/Расход: [Дата, КатегорияID, Категория, 💳 Карта, 💵 Наличные, 📝 Описание]
+            # Новая строка: [Дата, КатегорияID, Категория, 💳 Карта, 💵 Наличные, 📝 Описание]
             row = [now, cat_id, cat_name, "", "", description]
             q   = str(amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
@@ -1501,25 +1513,27 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
             if action == "income":
                 sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Доход")
                 sheet.append_row(row, value_input_option="USER_ENTERED", table_range="A:F")
+                money_line = f"💰 {amount} ({source})"
                 text_msg = (
                     f"✅ Добавлено в *Доход*:\n"
                     f"📅 {now}\n"
                     f"🏷 {cat_name}\n"
-                    f"💰 {amount} ({source})\n"
+                    f"{money_line}\n"
                     f"📝 {description}"
                 )
             else:
                 sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Расход")
                 sheet.append_row(row, value_input_option="USER_ENTERED", table_range="A:F")
+                money_line = f"💸 -{amount} ({source})"
                 text_msg = (
                     f"✅ Добавлено в *Расход*:\n"
                     f"📅 {now}\n"
-                    f"💸 -{amount} ({source})\n"
+                    f"{money_line}\n"
                     f"🏷 {cat_name}\n"
                     f"📝 {description}"
                 )
 
-            # Живой баланс
+            # Баланс
             live = compute_balance(client)
             text_msg += (
                 f"\n\n📊 Баланс:\n"
@@ -1536,7 +1550,7 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
             context.user_data.clear()
             await update.message.reply_text(text_msg, reply_markup=kb, parse_mode="Markdown")
 
-            # ---- Компактные сообщения в канал ----
+            # Короткое сообщение в канал
             try:
                 source_emoji = "💳" if source == "Карта" else "💵"
                 desc_q = f' “{description}”' if description and description != "-" else ""
