@@ -1238,19 +1238,22 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Ошибка загрузки подробностей отчёта: {e}")
             await query.message.reply_text("⚠️ Не удалось загрузить подробности отчёта.")
         return
-    elif re.match(r"report_(7|30)_bycat$", data):
-    m = re.match(r"report_(7|30)_bycat$", data)
-    days = int(m.group(1))
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📥 Доход по категориям",  callback_data=f"report_{days}_bycat_income_page0")],
-        [InlineKeyboardButton("📤 Расход по категориям", callback_data=f"report_{days}_bycat_expense_page0")],
-        [InlineKeyboardButton("⬅️ Назад", callback_data=f"report_{days}")],
-    ])
-    await query.edit_message_text(f"🏷 По категориям за {days} дней:", reply_markup=kb)
-    return
 
-    elif re.match(r"report_(7|30)_bycat_(income|expense)_page(\d+)", data):
-        m = re.match(r"report_(7|30)_bycat_(income|expense)_page(\d+)", data)
+        # ... тут идут другие ветки внутри handle_button ...
+
+    elif re.match(r"report_(7|30)_bycat$", data):
+        m = re.match(r"report_(7|30)_bycat$", data)
+        days = int(m.group(1))
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📥 Доход по категориям",  callback_data=f"report_{days}_bycat_income_page0")],
+            [InlineKeyboardButton("📤 Расход по категориям", callback_data=f"report_{days}_bycat_expense_page0")],
+            [InlineKeyboardButton("⬅️ Назад", callback_data=f"report_{days}")],
+        ])
+        await query.edit_message_text(f"🏷 По категориям за {days} дней:", reply_markup=kb)
+        return
+
+    elif re.match(r"report_(7|30)_bycat_(income|expense)_page(\d+)$", data):
+        m = re.match(r"report_(7|30)_bycat_(income|expense)_page(\d+)$", data)
         days = int(m.group(1))
         kind = m.group(2)  # 'income' | 'expense'
         page = int(m.group(3))
@@ -1260,35 +1263,36 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             sheet_name = "Доход" if kind == "income" else "Расход"
             _, _, filtered = _sum_sheet_period(client, sheet_name, days)
 
-            items = _aggregate_by_category(filtered)  # [('Кат', Decimal), ...]
+            items = _aggregate_by_category(filtered)  # [('Категория', Decimal сумма), ...]
 
-            # Пагинация
+            # пагинация
             page_size = 15
             total_pages = max(1, (len(items) + page_size - 1) // page_size)
             page = max(0, min(page, total_pages - 1))
             slice_items = items[page * page_size : (page + 1) * page_size]
 
-            # Заголовок и иконки
             is_income = (kind == "income")
             hdr_icon = "📥" if is_income else "📤"
             line_icon = "🟢" if is_income else "🔴"
-            sign = "" if is_income else "-"  # отрицательный знак для визуала расхода
+            sign = "" if is_income else "-"
 
-            # Текст
             if slice_items:
-                lines = []
-                for i, (cat, amt) in enumerate(slice_items, start=page*page_size + 1):
-                    lines.append(f"{i}. {cat} — {line_icon} {sign}{_fmt_amount(amt)}")
+                start_idx = page * page_size + 1
+                lines = [
+                    f"{i}. {cat} — {line_icon} {sign}{_fmt_amount(amt)}"
+                    for i, (cat, amt) in enumerate(slice_items, start=start_idx)
+                ]
                 body = "\n".join(lines)
             else:
                 body = "Нет данных за период."
 
+            from decimal import Decimal
             total_sum = sum((v for _, v in items), Decimal("0"))
             total_line = f"Итого: {line_icon} {sign}{_fmt_amount(total_sum)}"
 
             text = f"{hdr_icon} По категориям за {days} дней:\n\n{body}\n\n{total_line}"
 
-            # Кнопки навигации
+            # навигация
             nav = []
             if page > 0:
                 nav.append(InlineKeyboardButton("⬅️ Предыдущая", callback_data=f"report_{days}_bycat_{kind}_page{page-1}"))
