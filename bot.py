@@ -18,21 +18,27 @@ def _parse_dt_safe(s: str):
         except ValueError:
             pass
     return None
-
+    
 WORKSHOP_SHEET = "Мастерская"
-WORKSHOP_HEADERS = ["ID", "Название", "VIN", "Создано"]    
+WORKSHOP_HEADERS = ["ID", "Название", "VIN", "Создано"]
 
-def ensure_ws_with_headers(client, sheet_name: str, headers: list[str]):
+def ensure_ws_with_headers(client, sheet_name: str, headers: list[str]) -> gspread.Worksheet:
+    """
+    Возвращает лист по имени. Если листа нет — создаёт.
+    Если лист пустой — записывает шапку headers.
+    ВНИМАНИЕ: отступы только пробелами (4 пробела).
+    """
     ss = client.open_by_key(SPREADSHEET_ID)
     try:
         ws = ss.worksheet(sheet_name)
     except gspread.exceptions.WorksheetNotFound:
         ws = ss.add_worksheet(title=sheet_name, rows=200, cols=max(len(headers), 6))
-        ws.append_row(headers, value_input_option="USER_ENTERED")
+        if headers:
+            ws.append_row(headers, value_input_option="USER_ENTERED")
         return ws
 
     rows = ws.get_all_values()
-    if not rows:
+    if not rows and headers:
         ws.append_row(headers, value_input_option="USER_ENTERED")
     return ws
 
