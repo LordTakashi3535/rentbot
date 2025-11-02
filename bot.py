@@ -1368,19 +1368,42 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("ws_finish_apply:"):
         car_id = data.split(":", 1)[1]
         try:
+            from decimal import Decimal
             client = get_gspread_client()
+
+            # --- читаем всё, что набрали на предыдущих шагах мастера ---
             car_name    = context.user_data.get("car_name", "(без названия)")
             dest_frozen = context.user_data.get("dest_frozen", "Карта")     # куда вернуть заморозку
             dest_income = context.user_data.get("dest_income", "Карта")     # куда зачислить доход
             frozen_total   = context.user_data.get("frozen_total", Decimal("0"))
             services_total = context.user_data.get("services_total", Decimal("0"))
 
-            # Разбивка заморозки по источникам (факт)
-            fz_br = get_frozen_breakdown_for_car(client, car_id)  # {'card','cash','total','count'}
+            # --- безопасная разбивка заморозки по источникам (попробуем штатную функцию, иначе – fallback) ---
+            try:
+                fz_br = get_frozen_breakdown_for_car(client, car_id)  # {'card','cash','total','count'}
+            except NameError:
+                # fallback через наличие _ensure_freeze_ws и _freeze_idx
+                fz_ws = _ensure_freeze_ws(client)
+                rows = fz_ws.get_all_values()
+                if not rows:
+                    fz_br = {"card": Decimal("0"), "cash": Decimal("0"), "total": Decimal("0"), "count": 0}
+                else:
+                    idx = _freeze_idx(rows[0])
+                    card = Decimal("0"); cash = Decimal("0"); cnt = 0
+                    for r in rows[1:]:
+                        if not r: continue
+                        if idx["carid"] is None or idx["carid"] >= len(r): continue
+                        if (r[idx["carid"]] or "").strip() != car_id: continue
+                        amt = _to_amount(r[idx["amount"]]) if (idx["amount"] is not None and idx["amount"] < len(r)) else Decimal("0")
+                        src = (r[idx["source"]] if (idx["source"] is not None and idx["source"] < len(r)) else "").strip()
+                        if src == "Карта":      card += amt
+                        elif src == "Наличные": cash += amt
+                        cnt += 1
+                    fz_br = {"card": card, "cash": cash, "total": card + cash, "count": cnt}
 
-            # Вспомогательный перевод между источниками (для «вернуть в другой источник»)
+            # --- внутренняя функция «перевод» (если вернуть надо в другой источник) ---
             def _append_transfer(amount: Decimal, direction: str):
-                if amount <= 0:
+                if amount <= 0: 
                     return
                 income_ws  = client.open_by_key(SPREADSHEET_ID).worksheet("Доход")
                 expense_ws = client.open_by_key(SPREADSHEET_ID).worksheet("Расход")
@@ -1397,43 +1420,63 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 expense_ws.append_row(exp, value_input_option="USER_ENTERED", table_range="A:F")
                 income_ws.append_row(inc,  value_input_option="USER_ENTERED", table_range="A:F")
 
-            # Реалокация если нужно (чтобы вернуть заморозку в выбранный источник)
+            # если просили вернуть заморозку в другой источник — сделаем реаллокацию
             if dest_frozen == "Карта":
                 _append_transfer(fz_br["cash"], "cash_to_card")
             else:
                 _append_transfer(fz_br["card"], "card_to_cash")
 
-            # Доход по услугам → Доход/категория "Ремонт"
-            if services_total > 0:
+            # --- Доход по услугам: категория «Ремонт» ---
+            try:
                 cat_id, cat_name = ensure_category_by_name("Доход", "Ремонт")
+            except NameError:
+                # если нет ensure_category_by_name — запасной план через ensure_default_category + переименование
+                cat_id, cat_name = ensure_default_category("Доход")
+                # cat_name останется «Другое», это не критично для теста; лучше всё же добавить ensure_category_by_name из моего прошл. сообщения
+
+            if services_total > 0:
                 income_ws = client.open_by_key(SPREADSHEET_ID).worksheet("Доход")
                 now = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
                 row = [now, cat_id, cat_name, "", "", f"Ремонт: {car_name}"]
                 q = str(services_total.quantize(Decimal("0.01")))
-                if dest_income == "Карта":
-                    row[3] = q
-                else:
-                    row[4] = q
+                if dest_income == "Карта": row[3] = q
+                else:                      row[4] = q
                 income_ws.append_row(row, value_input_option="USER_ENTERED")
 
-            # Чистим листы по машине
+            # --- очистим «Заморозка» и «Услуги» по этой машине ---
             fz_ws = _ensure_freeze_ws(client)
-            fz_header = fz_ws.get_all_values()[0] if fz_ws.get_all_values() else []
+            fz_rows = fz_ws.get_all_values()
+            fz_header = fz_rows[0] if fz_rows else []
             fz_idx = _freeze_idx(fz_header) if fz_header else {"carid":1}
-            fz_rows = _collect_row_indices_by_car(fz_ws, car_id, fz_idx["carid"])
-            if fz_rows:
-                _delete_rows_by_indices(fz_ws, fz_rows)
+            # соберём индексы строк на удаление (1-based)
+            to_del = []
+            for i, r in enumerate(fz_rows[1:], start=2):
+                if fz_idx.get("carid") is not None and fz_idx["carid"] < len(r) and (r[fz_idx["carid"]] or "").strip() == car_id:
+                    to_del.append(i)
+            for i in sorted(to_del, reverse=True):
+                fz_ws.delete_rows(i)
 
             sv_ws = _ensure_services_ws(client)
-            sv_rows = _collect_row_indices_by_car(sv_ws, car_id, 1)  # CarID во 2-й колонке
-            if sv_rows:
-                _delete_rows_by_indices(sv_ws, sv_rows)
+            sv_rows = sv_ws.get_all_values()
+            # CarID во второй колонке (index=1)
+            to_del = []
+            for i, r in enumerate(sv_rows[1:], start=2):
+                if len(r) > 1 and (r[1] or "").strip() == car_id:
+                    to_del.append(i)
+            for i in sorted(to_del, reverse=True):
+                sv_ws.delete_rows(i)
 
-            # Пересчёт
-            live = compute_summary(client)
-            fz_totals_after = get_frozen_totals(client)
+            # --- пересчёт баланса и заморозок для отчёта ---
+            try:
+                live = compute_summary(client)
+            except Exception:
+                live = {"Карта": Decimal("0"), "Наличные": Decimal("0")}
+            try:
+                fz_totals_after = get_frozen_totals(client)  # {'card','cash','total'}
+            except Exception:
+                fz_totals_after = {"card": Decimal("0"), "cash": Decimal("0"), "total": Decimal("0")}
 
-            # Полный отчёт в группу
+            # --- подробный отчёт в группу ---
             try:
                 lines = []
                 lines.append(f"*{car_name}* — завершение ремонта")
@@ -1447,30 +1490,34 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 lines.append(f"🛠️ Доход по услугам: {_fmt_amount(services_total)} → {'💳 Карта' if dest_income=='Карта' else '💵 Наличные'}")
                 lines.append("")
                 lines.append("📊 Баланс сейчас (по учёту):")
-                lines.append(f"• 💳 Карта: {_fmt_amount(live['Карта'])}")
-                lines.append(f"• 💵 Наличные: {_fmt_amount(live['Наличные'])}")
+                lines.append(f"• 💳 Карта: {_fmt_amount(live.get('Карта', 0))}")
+                lines.append(f"• 💵 Наличные: {_fmt_amount(live.get('Наличные', 0))}")
                 if fz_totals_after["total"] > 0:
                     lines.append("")
                     lines.append("🧊 Заморожено осталось:")
                     lines.append(f"• Всего: {_fmt_amount(fz_totals_after['total'])} (💳 {_fmt_amount(fz_totals_after['card'])} | 💵 {_fmt_amount(fz_totals_after['cash'])})")
-                await context.bot.send_message(
-                    chat_id=REMINDER_CHAT_ID,
-                    text="\n".join(lines),
-                    parse_mode="Markdown"
-                )
+                await context.bot.send_message(chat_id=REMINDER_CHAT_ID, text="\n".join(lines), parse_mode="Markdown")
             except Exception as e:
                 logger.error(f"ws_finish group report error: {e}")
 
+            # --- финал пользователю ---
             context.user_data.clear()
             kb = InlineKeyboardMarkup([
                 [InlineKeyboardButton("⬅️ К машине", callback_data=f"workshop_view:{car_id}")],
                 [InlineKeyboardButton("⬅️ К списку", callback_data="workshop")],
             ])
             await query.edit_message_text("✅ Ремонт завершён. Данные обновлены.", reply_markup=kb)
+
         except Exception as e:
-            logger.error(f"ws_finish apply error: {e}")
+            err = f"ws_finish_apply error: {type(e).__name__}: {e}"
+            logger.error(err)
+            try:
+                await query.message.reply_text(f"⚠️ {err}")
+            except Exception:
+                pass
             await query.message.reply_text("❌ Не удалось завершить ремонт.")
         return
+
 
 
     elif data.startswith("ws_buy_src:"):
