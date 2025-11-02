@@ -2145,7 +2145,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("⚠️ Не удалось загрузить подробности отчёта.")
         return
 
-        # ... тут идут другие ветки внутри handle_button ...
+        # 
 
     elif re.match(r"report_(7|30)_bycat$", data):
         m = re.match(r"report_(7|30)_bycat$", data)
@@ -3616,5 +3616,5 @@ try:
     _WS.delete_rows = _unified_delete_rows
 
 except Exception as _e:
-    logging.warning(f\"Unified mode patch failed: {_e}\")
+    logging.warning(f"Unified mode patch failed: {_e}")
 # === END UNIFIED ===
