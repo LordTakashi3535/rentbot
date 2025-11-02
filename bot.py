@@ -1236,6 +1236,16 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         car_id = data.split(":", 1)[1]
         try:
             client = get_gspread_client()
+
+            # 0) Проверки базовых вещей
+            assert WORKSHOP_SHEET, "WORKSHOP_SHEET пуст"
+            assert WORKSHOP_HEADERS and isinstance(WORKSHOP_HEADERS, list), "WORKSHOP_HEADERS пустой"
+            # эти функции должны существовать:
+            assert callable(ensure_ws_with_headers), "нет ensure_ws_with_headers"
+            assert callable(_get_row_by_id), "нет _get_row_by_id"
+            assert callable(get_frozen_for_car), "нет get_frozen_for_car"
+            assert callable(get_services_total_for_car), "нет get_services_total_for_car"
+
             ws = ensure_ws_with_headers(client, WORKSHOP_SHEET, WORKSHOP_HEADERS)
 
             row, header, idx = _get_row_by_id(ws, car_id)
@@ -1251,6 +1261,8 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             car_name = g("Название", "(без названия)")
             car_vin  = g("VIN", "—")
 
+            # 1) Вот тут чаще всего падают: нет Decimal в этом модуле/скоупе или нет функций
+            from decimal import Decimal  # на случай, если импорт выше не сработал в этом файле
             frozen_total   = get_frozen_for_car(client, car_id)
             services_total = get_services_total_for_car(client, car_id)
 
@@ -1262,6 +1274,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 return
 
+            # 2) Сохраняем контекст мастера
             context.user_data.clear()
             context.user_data["action"]         = "ws_finish"
             context.user_data["car_id"]         = car_id
@@ -1283,10 +1296,18 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"Куда вернуть *замороженные* деньги?",
                 reply_markup=kb, parse_mode="Markdown"
             )
+
         except Exception as e:
-            logger.error(f"workshop_finish start error: {e}")
+            # Диагностика — увидим конкретную причину
+            err = f"workshop_finish start error: {type(e).__name__}: {e}"
+            logger.error(err)
+            try:
+                await query.message.reply_text(f"⚠️ {err}")
+            except Exception:
+                pass
             await query.message.reply_text("⚠️ Не удалось начать завершение ремонта.")
         return
+
 
     elif data.startswith("ws_finish_src_income:"):
         _, src, car_id = data.split(":", 2)
