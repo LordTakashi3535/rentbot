@@ -50,6 +50,36 @@ def _ensure_freeze_ws(client):
         logger.error(f"freeze sheet migrate error: {e}")
     return ws
 
+def get_frozen_breakdown_for_car(client, car_id: str):
+    """
+    Возвращает словарь с разбивкой по источникам и количеством позиций:
+    {'card': Decimal, 'cash': Decimal, 'total': Decimal, 'count': int}
+    """
+    ws = _ensure_freeze_ws(client)
+    rows = ws.get_all_values()
+    if not rows:
+        return {"card": Decimal("0"), "cash": Decimal("0"), "total": Decimal("0"), "count": 0}
+    idx = _freeze_idx(rows[0])
+    card = Decimal("0"); cash = Decimal("0"); cnt = 0
+    for r in rows[1:]:
+        if not r:
+            continue
+        if idx["carid"] is None or idx["carid"] >= len(r):
+            continue
+        if (r[idx["carid"]] or "").strip() != car_id:
+            continue
+        amt = _to_amount(r[idx["amount"]]) if (idx["amount"] is not None and idx["amount"] < len(r)) else Decimal("0")
+        src = (r[idx["source"]] if (idx["source"] is not None and idx["source"] < len(r)) else "").strip()
+        if src == "Карта":
+            card += amt
+        elif src == "Наличные":
+            cash += amt
+        else:
+            # старые строки без источника считаем "без источника" — но в total включаем
+            pass
+        cnt += 1
+    return {"card": card, "cash": cash, "total": card + cash, "count": cnt}
+
 def _ensure_services_ws(client):
     return ensure_ws_with_headers(client, SERVICES_SHEET, SERVICES_HEADERS)
 
@@ -1196,6 +1226,125 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=back_or_cancel_keyboard(f"workshop_view:{car_id}"),
             parse_mode="Markdown"
         )
+        return
+
+    elif data.startswith("ws_finish_apply:"):
+        car_id = data.split(":", 1)[1]
+        try:
+            client = get_gspread_client()
+            car_name    = context.user_data.get("car_name", "(без названия)")
+            dest_frozen = context.user_data.get("dest_frozen", "Карта")     # куда вернуть заморозку
+            dest_income = context.user_data.get("dest_income", "Карта")     # куда зачислить доход
+            frozen_total   = context.user_data.get("frozen_total", Decimal("0"))
+            services_total = context.user_data.get("services_total", Decimal("0"))
+
+            # разбивка заморозки по источникам (что реально было заморожено с карты/наличных)
+            fz_br = get_frozen_breakdown_for_car(client, car_id)  # {'card','cash','total','count'}
+
+            # 0) Если нужно — сделать "перевод", чтобы вернуть заморозку в ДРУГОЙ источник, чем исходный
+            #    (иначе после удаления заморозки деньги вернутся в те же источники, откуда были заморожены)
+            def _append_transfer(amount: Decimal, direction: str):
+                # direction: 'card_to_cash' или 'cash_to_card'
+                if amount <= 0:
+                    return
+                income_ws  = client.open_by_key(SPREADSHEET_ID).worksheet("Доход")
+                expense_ws = client.open_by_key(SPREADSHEET_ID).worksheet("Расход")
+                now = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
+                q = str(amount.quantize(Decimal("0.01")))
+                # формат строк: [Дата, КатID, Категория, 💳, 💵, 📝]
+                inc = [now, "", "Перевод (разморозка)", "", "", f"{car_name}"]
+                exp = [now, "", "Перевод (разморозка)", "", "", f"{car_name}"]
+                if direction == "card_to_cash":
+                    exp[3] = q  # расход по карте
+                    inc[4] = q  # доход наличными
+                else:  # cash_to_card
+                    exp[4] = q  # расход наличными
+                    inc[3] = q  # доход по карте
+                expense_ws.append_row(exp, value_input_option="USER_ENTERED", table_range="A:F")
+                income_ws.append_row(inc,  value_input_option="USER_ENTERED", table_range="A:F")
+
+            # На сколько нужно "переложить", чтобы итоги вернулись туда, куда просит пользователь
+            if dest_frozen == "Карта":
+                # всё, что было заморожено из Наличных, переложим в Карту
+                _append_transfer(fz_br["cash"], "cash_to_card")
+            else:
+                # всё, что было заморожено с Карты, переложим в Наличные
+                _append_transfer(fz_br["card"], "card_to_cash")
+
+            # 1) Доход по услугам (категория "Ремонт")
+            added_income_row = None
+            if services_total > 0:
+                cat_id, cat_name = ensure_category_by_name("Доход", "Ремонт")
+                income_ws = client.open_by_key(SPREADSHEET_ID).worksheet("Доход")
+                now = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
+                row = [now, cat_id, cat_name, "", "", f"Ремонт: {car_name}"]
+                q = str(services_total.quantize(Decimal("0.01")))
+                if dest_income == "Карта":
+                    row[3] = q
+                else:
+                    row[4] = q
+                income_ws.append_row(row, value_input_option="USER_ENTERED")
+                added_income_row = row
+
+            # 2) Очистить «Заморозка» и «Услуги» по машине
+            fz_ws = _ensure_freeze_ws(client)
+            fz_header = fz_ws.get_all_values()[0] if fz_ws.get_all_values() else []
+            fz_idx = _freeze_idx(fz_header) if fz_header else {"carid":1}
+            fz_rows = _collect_row_indices_by_car(fz_ws, car_id, fz_idx["carid"])
+            if fz_rows:
+                _delete_rows_by_indices(fz_ws, fz_rows)
+
+            sv_ws = _ensure_services_ws(client)
+            sv_rows = _collect_row_indices_by_car(sv_ws, car_id, 1)  # CarID — 2-я колонка => индекс 1
+            svc_count = len(sv_rows)
+            if sv_rows:
+                _delete_rows_by_indices(sv_ws, sv_rows)
+
+            # 3) Пересчитать итоги после операций
+            live = compute_summary(client)
+            fz_totals_after = get_frozen_totals(client)  # {'card','cash','total'}
+
+            # 4) Полный отчёт в группу
+            try:
+                parts = []
+                parts.append(f"*{car_name}* — завершение ремонта")
+                parts.append(f"🧊 Заморожено итого: {_fmt_amount(fz_br['total'])} (💳 {_fmt_amount(fz_br['card'])} | 💵 {_fmt_amount(fz_br['cash'])}), позиций: {fz_br['count']}")
+                parts.append(f"↩️ Возврат заморозки в: {'💳 Карту' if dest_frozen=='Карта' else '💵 Наличные'}")
+                if fz_br["total"] > 0:
+                    if dest_frozen == "Карта" and fz_br["cash"] > 0:
+                        parts.append(f"🔁 Реалокация: 💵 → 💳 {_fmt_amount(fz_br['cash'])}")
+                    if dest_frozen == "Наличные" and fz_br["card"] > 0:
+                        parts.append(f"🔁 Реалокация: 💳 → 💵 {_fmt_amount(fz_br['card'])}")
+                parts.append(f"🛠️ Услуги итого: {_fmt_amount(services_total)} → {'💳 Карта' if dest_income=='Карта' else '💵 Наличные'}")
+                parts.append("")
+                parts.append("📊 Баланс сейчас (по учёту):")
+                parts.append(f"• 💳 Карта: {_fmt_amount(live['Карта'])}")
+                parts.append(f"• 💵 Наличные: {_fmt_amount(live['Наличные'])}")
+                if fz_totals_after["total"] > 0:
+                    parts.append("")
+                    parts.append("🧊 Заморожено осталось:")
+                    parts.append(f"• Всего: {_fmt_amount(fz_totals_after['total'])} (💳 {_fmt_amount(fz_totals_after['card'])} | 💵 {_fmt_amount(fz_totals_after['cash'])})")
+
+                report = "\n".join(parts)
+
+                await context.bot.send_message(
+                    chat_id=REMINDER_CHAT_ID,
+                    text=report,
+                    parse_mode="Markdown"
+                )
+            except Exception as e:
+                logger.error(f"ws_finish group report error: {e}")
+
+            # 5) Ответ пользователю
+            context.user_data.clear()
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ К машине", callback_data=f"workshop_view:{car_id}")],
+                [InlineKeyboardButton("⬅️ К списку", callback_data="workshop")],
+            ])
+            await query.edit_message_text("✅ Ремонт завершён. Данные обновлены.", reply_markup=kb)
+        except Exception as e:
+            logger.error(f"ws_finish apply error: {e}")
+            await query.message.reply_text("❌ Не удалось завершить ремонт.")
         return
 
     elif data.startswith("ws_buy_src:"):
