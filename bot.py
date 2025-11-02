@@ -108,19 +108,18 @@ def delete_category(cat_id: str) -> bool:
     return False
 
 def _aggregate_by_category(rows):
-    """rows формата [Дата, КатID, Кат, 💳, 💵, 📝] -> [('Категория', Decimal сумма), ...], по убыванию."""
     by = {}
     for r in rows:
         cat = r[2] if len(r) > 2 and r[2].strip() else "—"
+        # ❗ прячем переводы
+        if cat.strip().lower() == "перевод":
+            continue
         card = _to_amount(r[3] if len(r) > 3 else "")
         cash = _to_amount(r[4] if len(r) > 4 else "")
-        total = card + cash
-        by[cat] = by.get(cat, Decimal("0")) + total
-    items = sorted(by.items(), key=lambda x: x[1], reverse=True)
-    return items
+        by[cat] = by.get(cat, Decimal("0")) + (card + cash)
+    return sorted(by.items(), key=lambda x: x[1], reverse=True)
 
-
-def _sum_sheet_period(client, sheet_name: str, days: int):
+def _sum_sheet_period(client, sheet_name: str, days: int, exclude_transfers: bool = False):
     """
     Возвращает (total_card, total_cash, rows_filtered)
     rows_filtered — строки, попавшие в диапазон по дате (последние N дней).
@@ -142,6 +141,10 @@ def _sum_sheet_period(client, sheet_name: str, days: int):
         if not dt or dt < start_date:
             continue
 
+        # 🚫 пропускаем переводы в отчётах (категория == "Перевод")
+        if exclude_transfers and (len(r) > 2) and (r[2] or "").strip().lower() == "перевод":
+            continue
+
         card = _to_amount(r[3] if len(r) > 3 else "")
         cash = _to_amount(r[4] if len(r) > 4 else "")
         total_card += card
@@ -149,6 +152,7 @@ def _sum_sheet_period(client, sheet_name: str, days: int):
         filtered.append(r)
 
     return total_card, total_cash, filtered
+
 
 
 def _render_detail_line(r: list, is_income: bool) -> str:
@@ -1152,8 +1156,9 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             client = get_gspread_client()
 
-            in_card, in_cash, _ = _sum_sheet_period(client, "Доход", days)
-            ex_card, ex_cash, _ = _sum_sheet_period(client, "Расход", days)
+            in_card, in_cash, _ = _sum_sheet_period(client, "Доход", days, exclude_transfers=True)
+            ex_card, ex_cash, _ = _sum_sheet_period(client, "Расход", days, exclude_transfers=True)
+
 
             income_total  = in_card + in_cash
             expense_total = ex_card + ex_cash
@@ -1205,7 +1210,8 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             is_income = (detail_type == "income")
             sheet_name = "Доход" if is_income else "Расход"
 
-            _, _, filtered = _sum_sheet_period(client, sheet_name, days)
+            _, _, filtered = _sum_sheet_period(client, sheet_name, days, exclude_transfers=True)
+
 
             page_size = 10
             total_pages = max(1, (len(filtered) + page_size - 1) // page_size)
@@ -1261,9 +1267,8 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             client = get_gspread_client()
             sheet_name = "Доход" if kind == "income" else "Расход"
-            _, _, filtered = _sum_sheet_period(client, sheet_name, days)
-
-            items = _aggregate_by_category(filtered)  # [('Категория', Decimal сумма), ...]
+            _, _, filtered = _sum_sheet_period(client, sheet_name, days, exclude_transfers=True)
+            items = _aggregate_by_category(filtered)
 
             # пагинация
             page_size = 15
