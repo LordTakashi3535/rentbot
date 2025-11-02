@@ -1177,6 +1177,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("🧾 Купить запчасти", callback_data=f"workshop_buy_parts:{car_id}")],
                 [InlineKeyboardButton("🛠️ Добавить услугу", callback_data=f"workshop_add_service:{car_id}")],
                 [InlineKeyboardButton(f"📜 Все услуги ({services_count})", callback_data=f"workshop_services:{car_id}:page0")],
+                [InlineKeyboardButton("✅ Завершить ремонт", callback_data=f"workshop_finish:{car_id}")],
                 [InlineKeyboardButton("⬅️ Назад", callback_data="workshop")],
             ])
             await query.edit_message_text(text, reply_markup=kb, parse_mode="Markdown")
