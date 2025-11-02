@@ -29,20 +29,53 @@ FREEZE_HEADERS = ["ID", "CarID", "Название", "VIN", "Дата", "Ист�
 # индексы по именам будем искать безопасно
 
 def _ensure_freeze_ws(client):
-    return ensure_ws_with_headers(client, FREEZE_SHEET, FREEZE_HEADERS)
+    ws = ensure_ws_with_headers(client, FREEZE_SHEET, FREEZE_HEADERS)
+    # миграция: если нет "Источник", вставим колонку F
+    try:
+        header = ws.row_values(1)
+        norm = [h.strip().lower() for h in header]
+        if "источник" not in norm:
+            # вставим новую колонку на позицию 6 (после "Дата")
+            ws.insert_cols([["Источник"]], col=6)
+            # убеждаемся что шапка корректная
+            new_header = ws.row_values(1)
+            # если шапка пустая/короче — обновим полностью
+            if len(new_header) < len(FREEZE_HEADERS):
+                ws.update("A1:H1", [FREEZE_HEADERS])
+    except Exception as e:
+        logger.error(f"freeze sheet migrate error: {e}")
+    return ws
 
 def _freeze_idx(header: list[str]) -> dict:
-    # безопасные индексы по именам (совпадение по названию, без регистра/пробелов)
-    norm = {h.strip().lower(): i for i, h in enumerate(header)}
+    # по именам, без регистра/пробелов; с fallback по длине
+    norm = { (h or "").strip().lower(): i for i, h in enumerate(header) }
+    def gi(key, default=None):
+        return norm.get(key, default)
+
+    amount_i = gi("сумма")
+    desc_i   = gi("описание")
+    src_i    = gi("источник")
+
+    # если названий нет — падаем на позиционную схему
+    if amount_i is None and len(header) >= 7:
+        # старая схема: [ID,CarID,Название,VIN,Дата,Сумма,Описание]
+        amount_i = 5
+        desc_i   = 6 if len(header) > 6 else None
+    if amount_i is None and len(header) >= 8:
+        # новая схема: [ID,CarID,Название,VIN,Дата,Источник,Сумма,Описание]
+        amount_i = 6
+        desc_i   = 7 if len(header) > 7 else None
+
     return {
-        "carid":  norm.get("carid", 1),
-        "name":   norm.get("название", 2),
-        "vin":    norm.get("vin", 3),
-        "date":   norm.get("дата", 4),
-        "source": norm.get("источник", 5),     # может отсутствовать в старых строках
-        "amount": norm.get("сумма", 6 if "источник" in norm else 5),
-        "desc":   norm.get("описание", 7 if "источник" in norm else 6),
+        "carid":  gi("carid", 1),
+        "name":   gi("название", 2),
+        "vin":    gi("vin", 3),
+        "date":   gi("дата", 4),
+        "source": src_i,          # может быть None (в старых строках)
+        "amount": amount_i,
+        "desc":   desc_i,
     }
+
 
 def get_frozen_for_car(client, car_id: str) -> Decimal:
     ws = _ensure_freeze_ws(client)
@@ -54,13 +87,12 @@ def get_frozen_for_car(client, car_id: str) -> Decimal:
     for r in rows[1:]:
         if not r: 
             continue
-        if idx["carid"] < len(r) and (r[idx["carid"]] or "").strip() == car_id:
-            amt = _to_amount(r[idx["amount"]] if idx["amount"] < len(r) else "0")
-            total += amt
+        if idx["carid"] is not None and idx["carid"] < len(r) and (r[idx["carid"]] or "").strip() == car_id:
+            if idx["amount"] is not None and idx["amount"] < len(r):
+                total += _to_amount(r[idx["amount"]])
     return total
 
 def get_frozen_by_car(client):
-    """Возвращает [(car_id, name, total)], total_all."""
     ws = _ensure_freeze_ws(client)
     rows = ws.get_all_values()
     if not rows:
@@ -68,13 +100,15 @@ def get_frozen_by_car(client):
     idx = _freeze_idx(rows[0])
     by = {}
     for r in rows[1:]:
-        if not r: 
+        if not r:
             continue
-        car_id = (r[idx["carid"]] if idx["carid"] < len(r) else "").strip()
+        if idx["carid"] is None or idx["carid"] >= len(r): 
+            continue
+        car_id = (r[idx["carid"]] or "").strip()
         if not car_id:
             continue
-        name = (r[idx["name"]] if idx["name"] < len(r) else "").strip() or "(без названия)"
-        amt  = _to_amount(r[idx["amount"]] if idx["amount"] < len(r) else "0")
+        name = (r[idx["name"]] if idx["name"] is not None and idx["name"] < len(r) else "").strip() or "(без названия)"
+        amt  = _to_amount(r[idx["amount"]]) if (idx["amount"] is not None and idx["amount"] < len(r)) else Decimal("0")
         by.setdefault(car_id, [name, Decimal("0")])
         by[car_id][1] += amt
     items = [(cid, nm, sm) for cid, (nm, sm) in by.items()]
@@ -83,7 +117,6 @@ def get_frozen_by_car(client):
     return items, total
 
 def get_frozen_totals(client):
-    """Сумма заморозки раздельно по источникам: {'card': Decimal, 'cash': Decimal, 'total': Decimal}"""
     ws = _ensure_freeze_ws(client)
     rows = ws.get_all_values()
     if not rows:
@@ -93,14 +126,14 @@ def get_frozen_totals(client):
     for r in rows[1:]:
         if not r:
             continue
-        src = (r[idx["source"]] if idx["source"] is not None and idx["source"] < len(r) else "").strip()
-        amt = _to_amount(r[idx["amount"]] if idx["amount"] < len(r) else "0")
+        amt = _to_amount(r[idx["amount"]]) if (idx["amount"] is not None and idx["amount"] < len(r)) else Decimal("0")
+        src = (r[idx["source"]] if (idx["source"] is not None and idx["source"] < len(r)) else "").strip()
         if src == "Карта":
             card += amt
         elif src == "Наличные":
             cash += amt
         else:
-            # если старые строки без источника — никуда не учитываем (не влияют на доступные)
+            # старые строки без источника не учитываем в разрезе источников
             pass
     return {"card": card, "cash": cash, "total": card + cash}
 
