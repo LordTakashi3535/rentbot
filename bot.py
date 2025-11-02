@@ -107,6 +107,19 @@ def delete_category(cat_id: str) -> bool:
             return True
     return False
 
+def _aggregate_by_category(rows):
+    """rows формата [Дата, КатID, Кат, 💳, 💵, 📝] -> [('Категория', Decimal сумма), ...], по убыванию."""
+    by = {}
+    for r in rows:
+        cat = r[2] if len(r) > 2 and r[2].strip() else "—"
+        card = _to_amount(r[3] if len(r) > 3 else "")
+        cash = _to_amount(r[4] if len(r) > 4 else "")
+        total = card + cash
+        by[cat] = by.get(cat, Decimal("0")) + total
+    items = sorted(by.items(), key=lambda x: x[1], reverse=True)
+    return items
+
+
 def _sum_sheet_period(client, sheet_name: str, days: int):
     """
     Возвращает (total_card, total_cash, rows_filtered)
@@ -1110,7 +1123,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             text = (
                 f"🏁 Начальная сумма: {_fmt_amount(s['Начальная'])}\n"
-                f"💼 Чистая прибыль (Доход − Расход): {_fmt_amount(s['Заработано'])}\n"
+                f"💼 Чистая прибыль: {_fmt_amount(s['Заработано'])}\n"
                 f"💰 Доход: {_fmt_amount(s['Доход'])}\n"
                 f"💸 Расход: {_fmt_amount(s['Расход'])}\n"
                 f"\n"
@@ -1156,6 +1169,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keyboard = InlineKeyboardMarkup(
                 [
                     [InlineKeyboardButton("📋 Подробности", callback_data=f"report_{days}_details_page0")],
+                    [InlineKeyboardButton("🏷 По категориям", callback_data=f"report_{days}_bycat")],
                     [InlineKeyboardButton("⬅️ Назад", callback_data="menu")],
                 ]
             )
@@ -1164,7 +1178,6 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Ошибка получения отчёта: {e}")
             await query.message.reply_text("⚠️ Не удалось загрузить отчёт.")
         return
-
 
     elif re.match(r"report_(7|30)_details_page(\d+)", data):
         m = re.match(r"report_(7|30)_details_page(\d+)", data)
@@ -1225,7 +1238,75 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Ошибка загрузки подробностей отчёта: {e}")
             await query.message.reply_text("⚠️ Не удалось загрузить подробности отчёта.")
         return
+    elif re.match(r"report_(7|30)_bycat$", data):
+    m = re.match(r"report_(7|30)_bycat$", data)
+    days = int(m.group(1))
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📥 Доход по категориям",  callback_data=f"report_{days}_bycat_income_page0")],
+        [InlineKeyboardButton("📤 Расход по категориям", callback_data=f"report_{days}_bycat_expense_page0")],
+        [InlineKeyboardButton("⬅️ Назад", callback_data=f"report_{days}")],
+    ])
+    await query.edit_message_text(f"🏷 По категориям за {days} дней:", reply_markup=kb)
+    return
 
+elif re.match(r"report_(7|30)_bycat_(income|expense)_page(\d+)", data):
+    m = re.match(r"report_(7|30)_bycat_(income|expense)_page(\d+)", data)
+    days = int(m.group(1))
+    kind = m.group(2)  # 'income' | 'expense'
+    page = int(m.group(3))
+
+    try:
+        client = get_gspread_client()
+        sheet_name = "Доход" if kind == "income" else "Расход"
+        _, _, filtered = _sum_sheet_period(client, sheet_name, days)
+
+        items = _aggregate_by_category(filtered)  # [('Кат', Decimal), ...]
+
+        # Пагинация
+        page_size = 15
+        total_pages = max(1, (len(items) + page_size - 1) // page_size)
+        page = max(0, min(page, total_pages - 1))
+        slice_items = items[page * page_size : (page + 1) * page_size]
+
+        # Заголовок и иконки
+        is_income = (kind == "income")
+        hdr_icon = "📥" if is_income else "📤"
+        line_icon = "🟢" if is_income else "🔴"
+        sign = "" if is_income else "-"  # отрицательный знак для визуала расхода
+
+        # Текст
+        if slice_items:
+            lines = []
+            for i, (cat, amt) in enumerate(slice_items, start=page*page_size + 1):
+                lines.append(f"{i}. {cat} — {line_icon} {sign}{_fmt_amount(amt)}")
+            body = "\n".join(lines)
+        else:
+            body = "Нет данных за период."
+
+        total_sum = sum((v for _, v in items), Decimal("0"))
+        total_line = f"Итого: {line_icon} {sign}{_fmt_amount(total_sum)}"
+
+        text = f"{hdr_icon} По категориям за {days} дней:\n\n{body}\n\n{total_line}"
+
+        # Кнопки навигации
+        nav = []
+        if page > 0:
+            nav.append(InlineKeyboardButton("⬅️ Предыдущая", callback_data=f"report_{days}_bycat_{kind}_page{page-1}"))
+        if page < total_pages - 1:
+            nav.append(InlineKeyboardButton("➡️ Следующая", callback_data=f"report_{days}_bycat_{kind}_page{page+1}"))
+
+        kb_rows = []
+        if nav:
+            kb_rows.append(nav)
+        kb_rows.append([InlineKeyboardButton("🔁 Выбрать тип", callback_data=f"report_{days}_bycat")])
+        kb_rows.append([InlineKeyboardButton("⬅️ Назад", callback_data=f"report_{days}")])
+
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb_rows))
+    except Exception as e:
+        logger.error(f"Ошибка отчёта по категориям: {e}")
+        await query.message.reply_text("⚠️ Не удалось построить отчёт по категориям.")
+    return
+    
 # Обработчик нажатия на кнопку "Меню" с клавиатуры — не отправляем текст, просто открываем меню
 async def on_menu_button_pressed(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await menu_command(update, context)
