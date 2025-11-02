@@ -1363,13 +1363,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         except Exception as e:
             await query.message.reply_text(f"⚠️ ws_finish_src_income error: {e}")
-        return
-
-elif data.startswith("ws_finish_apply:"):
-    # тут остаётся твой существующий код применения (переводы, доход, чистка листов, отчёт в группу)
-    # если его ещё нет — скажи, пришлю полный блок ещё раз.
-    ...
-    return    
+        return   
 
     elif data.startswith("ws_finish_apply:"):
         car_id = data.split(":", 1)[1]
