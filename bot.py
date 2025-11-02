@@ -24,6 +24,10 @@ def _parse_dt_safe(s: str):
 WORKSHOP_SHEET = "Мастерская"
 WORKSHOP_HEADERS = ["ID", "Название", "VIN", "Создано"]
 
+SERVICES_SHEET   = "Услуги"
+SERVICES_HEADERS = ["ID", "CarID", "Название", "VIN", "Дата", "Сумма", "Описание"]
+
+
 FREEZE_SHEET   = "Заморозка"
 FREEZE_HEADERS = ["ID", "CarID", "Название", "VIN", "Дата", "Источник", "Сумма", "Описание"]
 # индексы по именам будем искать безопасно
@@ -45,6 +49,20 @@ def _ensure_freeze_ws(client):
     except Exception as e:
         logger.error(f"freeze sheet migrate error: {e}")
     return ws
+
+def _ensure_services_ws(client):
+    return ensure_ws_with_headers(client, SERVICES_SHEET, SERVICES_HEADERS)
+
+def get_services_total_for_car(client, car_id: str) -> Decimal:
+    ws = _ensure_services_ws(client)
+    rows = ws.get_all_values()[1:]
+    total = Decimal("0")
+    for r in rows:
+        if not r:
+            continue
+        if (r[1] or "").strip() == car_id:
+            total += _to_amount(r[5] if len(r) > 5 else "0")
+    return total
 
 def _freeze_idx(header: list[str]) -> dict:
     # по именам, без регистра/пробелов; с fallback по длине
@@ -981,15 +999,18 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             vin  = (row[idx.get("VIN", 2)] if len(row) > 2 else "") or "—"
 
             frozen = get_frozen_for_car(client, car_id)
+            services_total = get_services_total_for_car(client, car_id)
 
             text = (
                 f"🧰 *{name}*\n"
                 f"🔑 VIN: `{vin}`\n"
-                f"🧊 Запчастей (заморожено): {_fmt_amount(frozen)}\n\n"
+                f"🧊 Запчастей (заморожено): {_fmt_amount(frozen)}\n"
+                f"🛠️ Услуг на сумму: {_fmt_amount(services_total)}\n\n"
                 f"Что делаем?"
             )
             kb = InlineKeyboardMarkup([
                 [InlineKeyboardButton("🧾 Купить запчасти", callback_data=f"workshop_buy_parts:{car_id}")],
+                [InlineKeyboardButton("🛠️ Добавить услугу", callback_data=f"workshop_add_service:{car_id}")],
                 [InlineKeyboardButton("⬅️ Назад", callback_data="workshop")],
             ])
             await query.edit_message_text(text, reply_markup=kb, parse_mode="Markdown")
@@ -1491,6 +1512,46 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("⚠️ Не удалось получить баланс.")
         return
 
+    elif data.startswith("workshop_add_service:"):
+        car_id = data.split(":", 1)[1]
+        try:
+            client = get_gspread_client()
+            ws = ensure_ws_with_headers(client, WORKSHOP_SHEET, WORKSHOP_HEADERS)
+            rows = ws.get_all_values()
+            header = rows[0]
+            idx = {h.strip(): i for i, h in enumerate(header)}
+            row = None
+            for r in rows[1:]:
+                if r and (r[0] or "").strip() == car_id:
+                    row = r
+                    break
+            if not row:
+                await query.edit_message_text(
+                    "🚫 Машина не найдена.",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="workshop")]])
+                )
+                return
+            car_name = (row[idx.get("Название", 1)] if len(row) > 1 else "") or "(без названия)"
+            car_vin  = (row[idx.get("VIN", 2)] if len(row) > 2 else "") or "—"
+        except Exception as e:
+            logger.error(f"workshop_add_service fetch car error: {e}")
+            await query.message.reply_text("⚠️ Не удалось открыть машину.")
+            return
+
+        context.user_data.clear()
+        context.user_data["action"]   = "ws_service"
+        context.user_data["car_id"]   = car_id
+        context.user_data["car_name"] = car_name
+        context.user_data["car_vin"]  = car_vin
+        context.user_data["step"]     = "ws_service_amount"
+
+        await query.edit_message_text(
+            f"🛠️ *Добавить услугу* для *{car_name}*\n🔑 VIN: `{car_vin}`\n\nВведите стоимость:",
+            reply_markup=back_or_cancel_keyboard(f"workshop_view:{car_id}"),
+            parse_mode="Markdown"
+        )
+        return 
+
     elif data in ["report_7", "report_30"]:
         days = 7 if data == "report_7" else 30
         try:
@@ -1739,6 +1800,70 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
                 reply_markup=back_or_cancel_keyboard(return_cb)
             )
         return
+    # === Автомастерская: добавление услуги ===
+    if context.user_data.get("action") == "ws_service":
+        step = context.user_data.get("step")
+        txt  = (update.message.text or "").strip()
+
+        if step == "ws_service_amount":
+            try:
+                amount = _to_amount(txt)
+                if amount <= 0:
+                    raise ValueError
+            except Exception:
+                await update.message.reply_text(
+                    "⚠️ Введите положительное число (например: 350.00)",
+                    reply_markup=back_or_cancel_keyboard(f"workshop_view:{context.user_data.get('car_id','')}")
+                )
+                return
+            context.user_data["amount"] = amount
+            context.user_data["step"] = "ws_service_desc"
+            await update.message.reply_text(
+                "Добавьте описание услуги (например: СТО, шиномонтаж, эвакуатор):",
+                reply_markup=back_or_cancel_keyboard(f"workshop_view:{context.user_data.get('car_id','')}")
+            )
+            return
+
+        if step == "ws_service_desc":
+            desc = txt or "-"
+            try:
+                client = get_gspread_client()
+                ws = _ensure_services_ws(client)
+
+                car_id   = context.user_data.get("car_id")
+                car_name = context.user_data.get("car_name") or "(без названия)"
+                car_vin  = context.user_data.get("car_vin") or "—"
+                amount   = context.user_data.get("amount", Decimal("0"))
+                now      = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
+                rec_id   = datetime.datetime.now().strftime("sv_%Y%m%d_%H%M%S")
+
+                ws.append_row(
+                    [rec_id, car_id, car_name, car_vin, now, str(amount.quantize(Decimal("0.01"))), desc],
+                    value_input_option="USER_ENTERED"
+                )
+
+                total_services = get_services_total_for_car(client, car_id)
+
+                kb = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅️ Назад к машине", callback_data=f"workshop_view:{car_id}")],
+                    [InlineKeyboardButton("🛠️ Добавить ещё услугу", callback_data=f"workshop_add_service:{car_id}")],
+                    [InlineKeyboardButton("⬅️ К списку", callback_data="workshop")],
+                ])
+                context.user_data.clear()
+                await update.message.reply_text(
+                    f"✅ Услуга добавлена: {_fmt_amount(amount)}\n"
+                    f"🛠️ Итого по услугам: {_fmt_amount(total_services)}",
+                    parse_mode="Markdown",
+                    reply_markup=kb
+                )
+            except Exception as e:
+                logger.error(f"ws_service save error: {e}")
+                await update.message.reply_text(
+                    "❌ Не удалось сохранить услугу.",
+                    reply_markup=back_or_cancel_keyboard(f"workshop_view:{context.user_data.get('car_id','')}")
+                )
+            return
+  
     # === Автомастерская: добавление машины ===
     if context.user_data.get("action") == "workshop_add":
         step = context.user_data.get("step")
