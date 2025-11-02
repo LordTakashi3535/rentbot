@@ -960,8 +960,6 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return
 
-
-
     elif data.startswith("income_cat|"):
         cat_id = data.split("|", 1)[1]
         cat_name = get_category_name(cat_id)
