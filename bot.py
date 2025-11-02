@@ -1308,29 +1308,6 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("⚠️ Не удалось начать завершение ремонта.")
         return
 
-
-    elif data.startswith("ws_finish_src_income:"):
-        _, src, car_id = data.split(":", 2)
-        dest_income = "Карта" if src == "card" else "Наличные"
-        context.user_data["dest_income"] = dest_income
-        context.user_data["action"] = "ws_finish"
-        context.user_data["step"]   = "ws_finish_confirm"
-
-        car_name = context.user_data.get("car_name","")
-        fz = context.user_data.get("frozen_total", Decimal("0"))
-        sv = context.user_data.get("services_total", Decimal("0"))
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ Подтвердить", callback_data=f"ws_finish_apply:{car_id}")],
-            [InlineKeyboardButton("⬅️ Назад", callback_data=f"workshop_finish:{car_id}")],
-        ])
-        await query.edit_message_text(
-            f"*Итог для {car_name}:*\n"
-            f"🧊 Разморозить: {_fmt_amount(fz)} → {context.user_data.get('dest_frozen')}\n"
-            f"🛠️ Доход по услугам: {_fmt_amount(sv)} → {dest_income}\n\n"
-            f"Подтверждаете?",
-            reply_markup=kb, parse_mode="Markdown"
-        )
-        return
     elif data.startswith("ws_finish_src_frozen:"):
         # формат: ws_finish_src_frozen:card|cash:<car_id>
         try:
