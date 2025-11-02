@@ -229,14 +229,13 @@ def get_frozen_totals(client):
         if not r:
             continue
         amt = _to_amount(r[idx["amount"]]) if (idx["amount"] is not None and idx["amount"] < len(r)) else Decimal("0")
-        raw_src = (r[idx["source"]] if (idx["source"] is not None and idx["source"] < len(r)) else "").strip()
-        src = _norm_source(raw_src)  # ← нормализуем перед сравнением
+        src = (r[idx["source"]] if (idx["source"] is not None and idx["source"] < len(r)) else "").strip()
         if src == "Карта":
             card += amt
         elif src == "Наличные":
             cash += amt
         else:
-            # старые/пустые значения источника игнорим в разрезе, но total посчитается из суммы card+cash
+            # старые строки без источника не учитываем в разрезе источников
             pass
     return {"card": card, "cash": cash, "total": card + cash}
 
@@ -1386,23 +1385,12 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             from decimal import Decimal
             client = get_gspread_client()
 
-            car_name = context.user_data.get("car_name", "(без названия)")
-            # НЕ даём дефолтов — заставим выбрать явно
-            dest_frozen = context.user_data.get("dest_frozen")
-            dest_income = context.user_data.get("dest_income")
+            # --- читаем всё, что набрали на предыдущих шагах мастера ---
+            car_name    = context.user_data.get("car_name", "(без названия)")
+            dest_frozen = context.user_data.get("dest_frozen", "Карта")     # куда вернуть заморозку
+            dest_income = context.user_data.get("dest_income", "Карта")     # куда зачислить доход
             frozen_total   = context.user_data.get("frozen_total", Decimal("0"))
             services_total = context.user_data.get("services_total", Decimal("0"))
-
-            # Если не выбрано — просим выбрать и выходим
-            if dest_frozen not in ("Карта", "Наличные") or dest_income not in ("Карта", "Наличные"):
-                kb = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("⬅️ Назад", callback_data=f"workshop_finish:{car_id}")]
-                ])
-                await query.edit_message_text(
-                    "Не выбран кошелёк для заморозки и/или дохода. Пожалуйста, укажи оба направления.",
-                    reply_markup=kb
-                )
-                return
 
             # --- безопасная разбивка заморозки по источникам (попробуем штатную функцию, иначе – fallback) ---
             try:
@@ -1560,7 +1548,6 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["action"] = "ws_buy"
         context.user_data["step"] = "ws_buy_desc"
         context.user_data["source"] = source
-        context.user_data["ws_freeze_source"] = source  # ← дублируем для совместимости
         # car_id/имя/vin/amount уже лежат в user_data из предыдущих шагов
         await query.edit_message_text(
             "Добавьте описание (что купили) — можно одним словом:",
@@ -2457,14 +2444,15 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
                 car_name = context.user_data.get("car_name") or "(без названия)"
                 car_vin  = context.user_data.get("car_vin") or "—"
                 amount   = context.user_data.get("amount", Decimal("0"))
-                raw_source = context.user_data.get("source", "")  # "Карта" / "Наличные" / возможные варианты
-                source = _norm_source(raw_source) or "Карта"      # подстрахуемся дефолтом
-                rec_id = datetime.datetime.now().strftime("fz_%Y%m%d_%H%M%S")
+                source   = context.user_data.get("source", "")  # "Карта" / "Наличные"
+                rec_id   = datetime.datetime.now().strftime("fz_%Y%m%d_%H%M%S")
 
+                # пишем с колонкой «Источник» (если лист старый — просто добавится лишняя колонка)
                 ws.append_row(
                     [rec_id, car_id, car_name, car_vin, now, source, str(amount.quantize(Decimal("0.01"))), desc],
                     value_input_option="USER_ENTERED"
                 )
+
                 # сумма заморозки по машине
                 frozen = get_frozen_for_car(client, car_id)
 
@@ -3379,3 +3367,105 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
+# === PATCH SECTION: rate-limit retries + data normalization (non-invasive) ===
+# These overrides are appended so they don't require changing your existing logic.
+# They add:
+# 1) Automatic retry for READ calls to Google Sheets (get_all_values).
+# 2) Source normalization ("Карта"/"Наличные") when appending to the FREEZE sheet.
+# 3) A more robust get_frozen_totals that normalizes the "Источник" column.
+
+# -- Retry hints used inside wrappers --
+RATE_LIMIT_HINTS = (
+    "RATE_LIMIT_EXCEEDED",
+    "Read requests per minute per user",
+    "RESOURCE_EXHAUSTED",
+    "quota",
+    "429",
+)
+
+def _rate_limited(e: Exception) -> bool:
+    s = str(e)
+    return any(h in s for h in RATE_LIMIT_HINTS)
+
+# -- Monkey-patch gspread Worksheet.get_all_values with exponential backoff --
+try:
+    import gspread
+    from gspread.exceptions import APIError as _GS_APIError
+    import time as _time
+
+    if hasattr(gspread, "models") and hasattr(gspread.models, "Worksheet"):
+        _orig_get_all_values = gspread.models.Worksheet.get_all_values
+
+        def _get_all_values_retry(self, *args, **kwargs):
+            delays = [0.5, 1, 2, 4, 8]
+            last_exc = None
+            for d in delays:
+                try:
+                    return _orig_get_all_values(self, *args, **kwargs)
+                except _GS_APIError as e:
+                    if _rate_limited(e):
+                        last_exc = e
+                        _time.sleep(d)
+                        continue
+                    raise
+            if last_exc:
+                # final attempt
+                return _orig_get_all_values(self, *args, **kwargs)
+            return _orig_get_all_values(self, *args, **kwargs)
+
+        gspread.models.Worksheet.get_all_values = _get_all_values_retry
+except Exception as _e:
+    logging.warning(f"get_all_values retry patch skipped: {_e}")
+
+# -- Monkey-patch Worksheet.append_row to normalize "Источник" in FREEZE sheet --
+try:
+    import gspread
+    _orig_append_row = gspread.models.Worksheet.append_row
+
+    def _append_row_with_norm(self, values, *args, **kwargs):
+        try:
+            title = getattr(self, "title", "")
+        except Exception:
+            title = ""
+        try:
+            # FREEZE_SHEET constant is defined above in your code.
+            if title and 'FREEZE_SHEET' in globals():
+                if title == FREEZE_SHEET and isinstance(values, list) and len(values) >= 6:
+                    # values format: [ID, CarID, Название, VIN, Дата, Источник, Сумма, Описание]
+                    # normalize index 5 (Источник)
+                    raw = values[5] if len(values) > 5 else ""
+                    if '_norm_source' in globals():
+                        norm = _norm_source(str(raw))
+                        values[5] = norm or "Карта"
+        except Exception as _e:
+            # never fail the call because of normalization
+            logging.debug(f"append_row norm skipped: {_e}")
+        return _orig_append_row(self, values, *args, **kwargs)
+
+    gspread.models.Worksheet.append_row = _append_row_with_norm
+except Exception as _e:
+    logging.warning(f"append_row norm patch skipped: {_e}")
+
+# -- Robust get_frozen_totals override (normalizes 'Источник' and uses retried reads) --
+def get_frozen_totals(client):
+    ws = _ensure_freeze_ws(client)
+    rows = ws.get_all_values()
+    if not rows:
+        return {"card": Decimal("0"), "cash": Decimal("0"), "total": Decimal("0")}
+    idx = _freeze_idx(rows[0])
+    card = Decimal("0"); cash = Decimal("0")
+    for r in rows[1:]:
+        if not r:
+            continue
+        amt = _to_amount(r[idx["amount"]]) if (idx["amount"] is not None and idx["amount"] < len(r)) else Decimal("0")
+        raw_src = (r[idx["source"]] if (idx["source"] is not None and idx["source"] < len(r)) else "").strip()
+        src = _norm_source(raw_src) if '_norm_source' in globals() else raw_src
+        if src == "Карта":
+            card += amt
+        elif src == "Наличные":
+            cash += amt
+    return {"card": card, "cash": cash, "total": card + cash}
+# === END PATCH SECTION ===
