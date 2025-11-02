@@ -25,41 +25,84 @@ WORKSHOP_SHEET = "Мастерская"
 WORKSHOP_HEADERS = ["ID", "Название", "VIN", "Создано"]
 
 FREEZE_SHEET   = "Заморозка"
-FREEZE_HEADERS = ["ID", "CarID", "Название", "VIN", "Дата", "Сумма", "Описание"]
+FREEZE_HEADERS = ["ID", "CarID", "Название", "VIN", "Дата", "Источник", "Сумма", "Описание"]
+# индексы по именам будем искать безопасно
 
 def _ensure_freeze_ws(client):
     return ensure_ws_with_headers(client, FREEZE_SHEET, FREEZE_HEADERS)
 
+def _freeze_idx(header: list[str]) -> dict:
+    # безопасные индексы по именам (совпадение по названию, без регистра/пробелов)
+    norm = {h.strip().lower(): i for i, h in enumerate(header)}
+    return {
+        "carid":  norm.get("carid", 1),
+        "name":   norm.get("название", 2),
+        "vin":    norm.get("vin", 3),
+        "date":   norm.get("дата", 4),
+        "source": norm.get("источник", 5),     # может отсутствовать в старых строках
+        "amount": norm.get("сумма", 6 if "источник" in norm else 5),
+        "desc":   norm.get("описание", 7 if "источник" in norm else 6),
+    }
+
 def get_frozen_for_car(client, car_id: str) -> Decimal:
     ws = _ensure_freeze_ws(client)
-    rows = ws.get_all_values()[1:]
+    rows = ws.get_all_values()
+    if not rows:
+        return Decimal("0")
+    idx = _freeze_idx(rows[0])
     total = Decimal("0")
-    for r in rows:
+    for r in rows[1:]:
         if not r: 
             continue
-        if (r[1] or "").strip() == car_id:
-            total += _to_amount(r[5] if len(r) > 5 else "0")
+        if idx["carid"] < len(r) and (r[idx["carid"]] or "").strip() == car_id:
+            amt = _to_amount(r[idx["amount"]] if idx["amount"] < len(r) else "0")
+            total += amt
     return total
 
 def get_frozen_by_car(client):
+    """Возвращает [(car_id, name, total)], total_all."""
     ws = _ensure_freeze_ws(client)
-    rows = ws.get_all_values()[1:]
-    by = {}  # car_id -> (name, sum)
-    for r in rows:
-        if not r:
+    rows = ws.get_all_values()
+    if not rows:
+        return [], Decimal("0")
+    idx = _freeze_idx(rows[0])
+    by = {}
+    for r in rows[1:]:
+        if not r: 
             continue
-        car_id = (r[1] or "").strip()
-        name   = (r[2] or "").strip() or "(без названия)"
-        amt    = _to_amount(r[5] if len(r) > 5 else "0")
-        if car_id not in by:
-            by[car_id] = [name, Decimal("0")]
+        car_id = (r[idx["carid"]] if idx["carid"] < len(r) else "").strip()
+        if not car_id:
+            continue
+        name = (r[idx["name"]] if idx["name"] < len(r) else "").strip() or "(без названия)"
+        amt  = _to_amount(r[idx["amount"]] if idx["amount"] < len(r) else "0")
+        by.setdefault(car_id, [name, Decimal("0")])
         by[car_id][1] += amt
     items = [(cid, nm, sm) for cid, (nm, sm) in by.items()]
-    total = sum((sm for _,_,sm in items), Decimal("0"))
     items.sort(key=lambda t: t[2], reverse=True)
+    total = sum((sm for _, _, sm in items), Decimal("0"))
     return items, total
 
-
+def get_frozen_totals(client):
+    """Сумма заморозки раздельно по источникам: {'card': Decimal, 'cash': Decimal, 'total': Decimal}"""
+    ws = _ensure_freeze_ws(client)
+    rows = ws.get_all_values()
+    if not rows:
+        return {"card": Decimal("0"), "cash": Decimal("0"), "total": Decimal("0")}
+    idx = _freeze_idx(rows[0])
+    card = Decimal("0"); cash = Decimal("0")
+    for r in rows[1:]:
+        if not r:
+            continue
+        src = (r[idx["source"]] if idx["source"] is not None and idx["source"] < len(r) else "").strip()
+        amt = _to_amount(r[idx["amount"]] if idx["amount"] < len(r) else "0")
+        if src == "Карта":
+            card += amt
+        elif src == "Наличные":
+            cash += amt
+        else:
+            # если старые строки без источника — никуда не учитываем (не влияют на доступные)
+            pass
+    return {"card": card, "cash": cash, "total": card + cash}
 
 def ensure_ws_with_headers(client, sheet_name: str, headers: list[str]) -> gspread.Worksheet:
     """
@@ -964,6 +1007,21 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    elif data.startswith("ws_buy_src:"):
+        # формат: ws_buy_src:card:<car_id>  или ws_buy_src:cash:<car_id>
+        _, src, car_id = data.split(":", 2)
+        source = "Карта" if src == "card" else "Наличные"
+        # сохраняем выбор и просим описание
+        context.user_data["action"] = "ws_buy"
+        context.user_data["step"] = "ws_buy_desc"
+        context.user_data["source"] = source
+        # car_id/имя/vin/amount уже лежат в user_data из предыдущих шагов
+        await query.edit_message_text(
+            "Добавьте описание (что купили) — можно одним словом:",
+            reply_markup=back_or_cancel_keyboard(f"workshop_view:{car_id}")
+        )
+        return 
+
     elif data.startswith("income_cat|"):
         cat_id = data.split("|", 1)[1]
         cat_name = get_category_name(cat_id)
@@ -1351,15 +1409,19 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             client = get_gspread_client()
 
-            # суммарная заморозка по машинам
+            # суммарная заморозка по машинам + раздельно по источникам
             items, frozen_total = get_frozen_by_car(client)
+            fz = get_frozen_totals(client)  # {'card','cash','total'}
 
             s = compute_summary(client)
 
+            # доступно с учётом заморозки
+            avail_card = s["Карта"] - fz["card"]
+            avail_cash = s["Наличные"] - fz["cash"]
+            avail_total = avail_card + avail_cash
+
             # Блок «заморожено по машинам»
-            frozen_lines = []
-            for _, name, sm in items:
-                frozen_lines.append(f"🧊 {name}: {_fmt_amount(sm)}")
+            frozen_lines = [f"🧊 {name}: {_fmt_amount(sm)}" for _, name, sm in items]
             frozen_block = ""
             if frozen_lines:
                 frozen_block = "Заморожено запчасти:\n" + "\n".join(frozen_lines) + "\n\n"
@@ -1367,13 +1429,18 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text = (
                 f"{frozen_block}"
                 f"🏁 Начальная сумма: {_fmt_amount(s['Начальная'])}\n"
-                f"💼 Чистая прибыль (Доход − Расход): {_fmt_amount(s['Заработано'])}\n"
                 f"💰 Доход: {_fmt_amount(s['Доход'])}\n"
                 f"💸 Расход: {_fmt_amount(s['Расход'])}\n"
                 f"\n"
-                f"💼 Баланс: {_fmt_amount(s['Баланс'])}\n"
-                f"💳 Карта: {_fmt_amount(s['Карта'])}\n"
-                f"💵 Наличные: {_fmt_amount(s['Наличные'])}"
+                f"💼 Баланс (по учёту): {_fmt_amount(s['Баланс'])}\n"
+                f"  ├─ 💳 Карта: {_fmt_amount(s['Карта'])}\n"
+                f"  └─ 💵 Наличные: {_fmt_amount(s['Наличные'])}\n"
+                f"\n"
+                f"🧊 Заморожено всего: {_fmt_amount(fz['total'])} "
+                f"(💳 {_fmt_amount(fz['card'])} | 💵 {_fmt_amount(fz['cash'])})\n"
+                f"✅ Доступно сейчас: *_{_fmt_amount(avail_total)}_*\n"
+                f"  ├─ 💳 Карта (доступно): {_fmt_amount(avail_card)}\n"
+                f"  └─ 💵 Наличные (доступно): {_fmt_amount(avail_cash)}"
             )
 
             keyboard = InlineKeyboardMarkup(
@@ -1385,7 +1452,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     [InlineKeyboardButton("⬅️ Назад", callback_data="menu")],
                 ]
             )
-            await query.edit_message_text(text, reply_markup=keyboard)
+            await query.edit_message_text(text, reply_markup=keyboard, parse_mode="Markdown")
         except Exception as e:
             logger.error(f"Ошибка баланса: {e}")
             await query.message.reply_text("⚠️ Не удалось получить баланс.")
@@ -1701,6 +1768,7 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
                 await update.message.reply_text("❌ Не удалось сохранить машину.", reply_markup=back_or_cancel_keyboard("workshop"))
             return
         # === Автомастерская: покупка запчастей (заморозка) ===
+    # === Автомастерская: покупка запчастей (заморозка) ===
     if context.user_data.get("action") == "ws_buy":
         step = context.user_data.get("step")
         txt  = (update.message.text or "").strip()
@@ -1717,11 +1785,15 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
                 )
                 return
             context.user_data["amount"] = amount
-            context.user_data["step"] = "ws_buy_desc"
-            await update.message.reply_text(
-                "Добавьте описание (что купили) — можно одним словом:",
-                reply_markup=back_or_cancel_keyboard(f"workshop_view:{context.user_data.get('car_id','')}")
-            )
+            context.user_data["step"] = "ws_buy_source"
+            car_id = context.user_data.get("car_id","")
+            # спрашиваем источник кнопками
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("💳 Карта",    callback_data=f"ws_buy_src:card:{car_id}")],
+                [InlineKeyboardButton("💵 Наличные", callback_data=f"ws_buy_src:cash:{car_id}")],
+                [InlineKeyboardButton("❌ Отмена",   callback_data=f"workshop_view:{car_id}")],
+            ])
+            await update.message.reply_text("Где замораживаем деньги?", reply_markup=kb)
             return
 
         if step == "ws_buy_desc":
@@ -1735,11 +1807,12 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
                 car_name = context.user_data.get("car_name") or "(без названия)"
                 car_vin  = context.user_data.get("car_vin") or "—"
                 amount   = context.user_data.get("amount", Decimal("0"))
+                source   = context.user_data.get("source", "")  # "Карта" / "Наличные"
                 rec_id   = datetime.datetime.now().strftime("fz_%Y%m%d_%H%M%S")
 
-                # запись ТОЛЬКО в 'Заморозка' (Доход/Расход не трогаем)
+                # пишем с колонкой «Источник» (если лист старый — просто добавится лишняя колонка)
                 ws.append_row(
-                    [rec_id, car_id, car_name, car_vin, now, str(amount.quantize(Decimal("0.01"))), desc],
+                    [rec_id, car_id, car_name, car_vin, now, source, str(amount.quantize(Decimal("0.01"))), desc],
                     value_input_option="USER_ENTERED"
                 )
 
@@ -1748,9 +1821,10 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
 
                 # 🔔 Уведомление в группу
                 try:
+                    src_emoji = "💳" if source == "Карта" else "💵"
                     desc_q = f" — {desc}" if desc and desc != "-" else ""
                     group_msg = (
-                        f"🧊 Заморозка запчастей: +{_fmt_amount(amount)} на *{car_name}*{desc_q}\n"
+                        f"🧊 Заморозка запчастей: {src_emoji} +{_fmt_amount(amount)} на *{car_name}*{desc_q}\n"
                         f"Итого по машине: {_fmt_amount(frozen)}"
                     )
                     await context.bot.send_message(
@@ -1779,7 +1853,7 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
                     "❌ Не удалось сохранить покупку.",
                     reply_markup=back_or_cancel_keyboard(f"workshop_view:{context.user_data.get('car_id','')}")
                 )
-            return    
+            return
 
     # ====== ШАГ ВВОДА СУММЫ ======
     if step == "amount":
