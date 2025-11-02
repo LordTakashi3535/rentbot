@@ -1249,63 +1249,63 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(f"🏷 По категориям за {days} дней:", reply_markup=kb)
     return
 
-elif re.match(r"report_(7|30)_bycat_(income|expense)_page(\d+)", data):
-    m = re.match(r"report_(7|30)_bycat_(income|expense)_page(\d+)", data)
-    days = int(m.group(1))
-    kind = m.group(2)  # 'income' | 'expense'
-    page = int(m.group(3))
+    elif re.match(r"report_(7|30)_bycat_(income|expense)_page(\d+)", data):
+        m = re.match(r"report_(7|30)_bycat_(income|expense)_page(\d+)", data)
+        days = int(m.group(1))
+        kind = m.group(2)  # 'income' | 'expense'
+        page = int(m.group(3))
 
-    try:
-        client = get_gspread_client()
-        sheet_name = "Доход" if kind == "income" else "Расход"
-        _, _, filtered = _sum_sheet_period(client, sheet_name, days)
+        try:
+            client = get_gspread_client()
+            sheet_name = "Доход" if kind == "income" else "Расход"
+            _, _, filtered = _sum_sheet_period(client, sheet_name, days)
 
-        items = _aggregate_by_category(filtered)  # [('Кат', Decimal), ...]
+            items = _aggregate_by_category(filtered)  # [('Кат', Decimal), ...]
 
-        # Пагинация
-        page_size = 15
-        total_pages = max(1, (len(items) + page_size - 1) // page_size)
-        page = max(0, min(page, total_pages - 1))
-        slice_items = items[page * page_size : (page + 1) * page_size]
+            # Пагинация
+            page_size = 15
+            total_pages = max(1, (len(items) + page_size - 1) // page_size)
+            page = max(0, min(page, total_pages - 1))
+            slice_items = items[page * page_size : (page + 1) * page_size]
 
-        # Заголовок и иконки
-        is_income = (kind == "income")
-        hdr_icon = "📥" if is_income else "📤"
-        line_icon = "🟢" if is_income else "🔴"
-        sign = "" if is_income else "-"  # отрицательный знак для визуала расхода
+            # Заголовок и иконки
+            is_income = (kind == "income")
+            hdr_icon = "📥" if is_income else "📤"
+            line_icon = "🟢" if is_income else "🔴"
+            sign = "" if is_income else "-"  # отрицательный знак для визуала расхода
 
-        # Текст
-        if slice_items:
-            lines = []
-            for i, (cat, amt) in enumerate(slice_items, start=page*page_size + 1):
-                lines.append(f"{i}. {cat} — {line_icon} {sign}{_fmt_amount(amt)}")
-            body = "\n".join(lines)
-        else:
-            body = "Нет данных за период."
+            # Текст
+            if slice_items:
+                lines = []
+                for i, (cat, amt) in enumerate(slice_items, start=page*page_size + 1):
+                    lines.append(f"{i}. {cat} — {line_icon} {sign}{_fmt_amount(amt)}")
+                body = "\n".join(lines)
+            else:
+                body = "Нет данных за период."
 
-        total_sum = sum((v for _, v in items), Decimal("0"))
-        total_line = f"Итого: {line_icon} {sign}{_fmt_amount(total_sum)}"
+            total_sum = sum((v for _, v in items), Decimal("0"))
+            total_line = f"Итого: {line_icon} {sign}{_fmt_amount(total_sum)}"
 
-        text = f"{hdr_icon} По категориям за {days} дней:\n\n{body}\n\n{total_line}"
+            text = f"{hdr_icon} По категориям за {days} дней:\n\n{body}\n\n{total_line}"
 
-        # Кнопки навигации
-        nav = []
-        if page > 0:
-            nav.append(InlineKeyboardButton("⬅️ Предыдущая", callback_data=f"report_{days}_bycat_{kind}_page{page-1}"))
-        if page < total_pages - 1:
-            nav.append(InlineKeyboardButton("➡️ Следующая", callback_data=f"report_{days}_bycat_{kind}_page{page+1}"))
+            # Кнопки навигации
+            nav = []
+            if page > 0:
+                nav.append(InlineKeyboardButton("⬅️ Предыдущая", callback_data=f"report_{days}_bycat_{kind}_page{page-1}"))
+            if page < total_pages - 1:
+                nav.append(InlineKeyboardButton("➡️ Следующая", callback_data=f"report_{days}_bycat_{kind}_page{page+1}"))
 
-        kb_rows = []
-        if nav:
-            kb_rows.append(nav)
-        kb_rows.append([InlineKeyboardButton("🔁 Выбрать тип", callback_data=f"report_{days}_bycat")])
-        kb_rows.append([InlineKeyboardButton("⬅️ Назад", callback_data=f"report_{days}")])
+            kb_rows = []
+            if nav:
+                kb_rows.append(nav)
+            kb_rows.append([InlineKeyboardButton("🔁 Выбрать тип", callback_data=f"report_{days}_bycat")])
+            kb_rows.append([InlineKeyboardButton("⬅️ Назад", callback_data=f"report_{days}")])
 
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb_rows))
-    except Exception as e:
-        logger.error(f"Ошибка отчёта по категориям: {e}")
-        await query.message.reply_text("⚠️ Не удалось построить отчёт по категориям.")
-    return
+            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb_rows))
+        except Exception as e:
+            logger.error(f"Ошибка отчёта по категориям: {e}")
+            await query.message.reply_text("⚠️ Не удалось построить отчёт по категориям.")
+        return
     
 # Обработчик нажатия на кнопку "Меню" с клавиатуры — не отправляем текст, просто открываем меню
 async def on_menu_button_pressed(update: Update, context: ContextTypes.DEFAULT_TYPE):
