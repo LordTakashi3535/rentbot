@@ -22,6 +22,20 @@ def _parse_dt_safe(s: str):
 WORKSHOP_SHEET = "Мастерская"
 WORKSHOP_HEADERS = ["ID", "Название", "VIN", "Создано"]    
 
+def ensure_ws_with_headers(client, sheet_name: str, headers: list[str]):
+    ss = client.open_by_key(SPREADSHEET_ID)
+    try:
+        ws = ss.worksheet(sheet_name)
+    except gspread.exceptions.WorksheetNotFound:
+        ws = ss.add_worksheet(title=sheet_name, rows=200, cols=max(len(headers), 6))
+        ws.append_row(headers, value_input_option="USER_ENTERED")
+        return ws
+
+    rows = ws.get_all_values()
+    if not rows:
+        ws.append_row(headers, value_input_option="USER_ENTERED")
+    return ws
+
 # === Dynamic Categories & Records ===
 from typing import Optional, List, Dict, Tuple, Union
 
@@ -591,10 +605,9 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     elif data == "workshop":
-        try:
-            client = get_gspread_client()
-            ws = ensure_ws_with_headers(client, WORKSHOP_SHEET, WORKSHOP_HEADERS)
-            rows = ws.get_all_values()[1:]
+        client = get_gspread_client()
+        ws = ensure_ws_with_headers(client, WORKSHOP_SHEET, WORKSHOP_HEADERS)
+        rows = ws.get_all_values()[1:]
 
             if not rows:
                 kb = InlineKeyboardMarkup([
@@ -775,7 +788,42 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _show_categories_view(query, "Расход")
         return
 
+    elif data == "workshop":
+        # Список машин в Автомастерской
+        try:
+            client = get_gspread_client()
+            ws = ensure_ws_with_headers(client, WORKSHOP_SHEET, WORKSHOP_HEADERS)
+            rows = ws.get_all_values()[1:]  # пропускаем шапку
+
+            if not rows:
+                kb = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("➕ Добавить машину", callback_data="workshop_add")],
+                    [InlineKeyboardButton("⬅️ Назад", callback_data="menu")],
+                ])
+                await query.edit_message_text("🧰 *Автомастерская*\n\nСписок пуст.", reply_markup=kb, parse_mode="Markdown")
+                return
+
+            buttons = []
+            for r in rows:
+                if not r:
+                    continue
+                car_id = (r[0] or "").strip()
+                name   = (r[1] or "").strip() or "(без названия)"
+                buttons.append([InlineKeyboardButton(name, callback_data=f"workshop_view:{car_id}")])
+
+            buttons.append([InlineKeyboardButton("➕ Добавить машину", callback_data="workshop_add")])
+            buttons.append([InlineKeyboardButton("⬅️ Назад", callback_data="menu")])
+
+            await query.edit_message_text("🧰 *Автомастерская* — выберите машину:",
+                                          reply_markup=InlineKeyboardMarkup(buttons),
+                                          parse_mode="Markdown")
+        except Exception as e:
+            logger.error(f"workshop list error: {e}")
+            await query.message.reply_text("⚠️ Не удалось открыть Автомастерскую.")
+        return
+
     elif data == "workshop_add":
+        # Мастер добавления: шаг 1 — название
         context.user_data.clear()
         context.user_data["action"] = "workshop_add"
         context.user_data["step"] = "ws_add_name"
@@ -784,23 +832,26 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=back_or_cancel_keyboard("workshop"),
             parse_mode="Markdown"
         )
-        return 
+        return
+
     elif data.startswith("workshop_view:"):
+        # Карточка машины
         car_id = data.split(":", 1)[1]
         try:
             client = get_gspread_client()
             ws = ensure_ws_with_headers(client, WORKSHOP_SHEET, WORKSHOP_HEADERS)
             rows = ws.get_all_values()
-            header = rows[0] if rows else WORKSHOP_HEADERS
+            if not rows:
+                await query.edit_message_text("🚫 Лист пуст.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="workshop")]]))
+                return
+            header = rows[0]
             idx = {h.strip(): i for i, h in enumerate(header)}
 
-            # поиск строки по ID
             row = None
             for r in rows[1:]:
                 if r and (r[0] or "").strip() == car_id:
                     row = r
                     break
-
             if not row:
                 await query.edit_message_text("🚫 Машина не найдена.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="workshop")]]))
                 return
@@ -824,14 +875,15 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     elif data.startswith("workshop_buy_parts:"):
+        # Заглушка — подключим логику покупки/заморозки на следующем шаге
         car_id = data.split(":", 1)[1]
-        # На следующем шаге подключим «заморозку» и корзину запчастей
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("⬅️ Назад к машине", callback_data=f"workshop_view:{car_id}")],
             [InlineKeyboardButton("⬅️ К списку", callback_data="workshop")],
         ])
-        await query.edit_message_text("🧾 Покупка запчастей: скоро подключим логику 🧊 «заморозки».", reply_markup=kb)
+        await query.edit_message_text("🧾 Покупка запчастей: подключим логику на следующем шаге 🧊.", reply_markup=kb)
         return
+
 
     elif data.startswith("income_cat|"):
         cat_id = data.split("|", 1)[1]
@@ -1495,12 +1547,12 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
                 reply_markup=back_or_cancel_keyboard(return_cb)
             )
         return
-    # === Автомастерская: шаги добавления машины ===
+    # === Автомастерская: добавление машины ===
     if context.user_data.get("action") == "workshop_add":
         step = context.user_data.get("step")
         txt = (update.message.text or "").strip()
 
-        # 5.1 Ввод названия
+        # 1) Название
         if step == "ws_add_name":
             if not txt:
                 await update.message.reply_text(
@@ -1516,13 +1568,12 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
             )
             return
 
-        # 5.2 Ввод VIN (или '-'), запись в таблицу
+        # 2) VIN (или '-'), запись в лист
         if step == "ws_add_vin":
             vin = txt.upper().replace(" ", "")
             if vin == "-":
                 vin = ""
             else:
-                # мягкая проверка VIN: допустимы пусто или 17 символов (без I/O/Q)
                 bad = set("IOQ")
                 if vin and (len(vin) != 17 or any(ch in bad for ch in vin)):
                     await update.message.reply_text(
