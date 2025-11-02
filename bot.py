@@ -1486,6 +1486,26 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for i in sorted(to_del, reverse=True):
                 sv_ws.delete_rows(i)
 
+            # удалить саму машину из «Мастерская»
+            try:
+                ws_work = ensure_ws_with_headers(client, WORKSHOP_SHEET, WORKSHOP_HEADERS)
+                rows_w = ws_work.get_all_values()
+                if rows_w:
+                    try:
+                        id_idx = rows_w[0].index("ID")
+                    except ValueError:
+                        id_idx = 0
+                    del_i = None
+                    for i, r in enumerate(rows_w[1:], start=2):
+                        if id_idx < len(r) and (r[id_idx] or "").strip() == car_id:
+                            del_i = i
+                            break
+                    if del_i:
+                        ws_work.delete_rows(del_i)
+            except Exception as e:
+                logger.error(f"workshop delete car after finish error: {e}")
+
+
             # --- пересчёт баланса и заморозок для отчёта ---
             try:
                 live = compute_summary(client)
@@ -1526,7 +1546,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("⬅️ К машине", callback_data=f"workshop_view:{car_id}")],
                 [InlineKeyboardButton("⬅️ К списку", callback_data="workshop")],
             ])
-            await query.edit_message_text("✅ Ремонт завершён. Данные обновлены.", reply_markup=kb)
+            await query.edit_message_text(f"✅ Ремонт завершён для *{car_name}*. Данные обновлены.", reply_markup=kb, parse_mode="Markdown")
 
         except Exception as e:
             err = f"ws_finish_apply error: {type(e).__name__}: {e}"
