@@ -445,7 +445,13 @@ def compute_balance(client):
 
 def compute_summary(client):
     """
-    Возвращает показатели, читая INITIAL_BALANCE из листа 'Сводка'
+    Итоги по новому формату:
+    - Доход = SUM(Доход!D:E)
+    - Расход = SUM(Расход!D:E)
+    - Наличные = SUM(Доход!E) - SUM(Расход!E)
+    - Карта = INITIAL_BALANCE + SUM(Доход!D) - SUM(Расход!D)
+    - Баланс = Карта + Наличные
+    - Заработано (Чистая прибыль) = Доход - Расход
     """
     income_ws = client.open_by_key(SPREADSHEET_ID).worksheet("Доход")
     expense_ws = client.open_by_key(SPREADSHEET_ID).worksheet("Расход")
@@ -456,24 +462,32 @@ def compute_summary(client):
     income_card = Decimal("0")
     income_cash = Decimal("0")
     for r in income_rows:
-        if len(r) > 3: income_card += _to_amount(r[3])
-        if len(r) > 4: income_cash += _to_amount(r[4])
+        if len(r) > 3: income_card += _to_amount(r[3])  # 💳
+        if len(r) > 4: income_cash += _to_amount(r[4])  # 💵
 
     expense_card = Decimal("0")
     expense_cash = Decimal("0")
     for r in expense_rows:
-        if len(r) > 3: expense_card += _to_amount(r[3])
-        if len(r) > 4: expense_cash += _to_amount(r[4])
+        if len(r) > 3: expense_card += _to_amount(r[3])  # 💳
+        if len(r) > 4: expense_cash += _to_amount(r[4])  # 💵
 
     income_total  = income_card + income_cash
     expense_total = expense_card + expense_cash
 
-    initial = get_initial_balance(client)
+    # Динамическая начальная сумма, если функция есть; иначе — константа.
+    try:
+        initial = get_initial_balance(client)  # динамический вариант (из "Сводка")
+    except NameError:
+        try:
+            initial = INITIAL_BALANCE          # старый вариант (константа в коде)
+        except NameError:
+            initial = Decimal("0")
 
     cash    = income_cash - expense_cash
     card    = initial + income_card - expense_card
     balance = card + cash
-    earned  = income_total - initial
+
+    earned  = income_total - expense_total  # <-- ЧИСТАЯ ПРИБЫЛЬ
 
     return {
         "Начальная": initial,
@@ -482,8 +496,8 @@ def compute_summary(client):
         "Наличные": cash,
         "Карта": card,
         "Баланс": balance,
-        "Заработано": earned,
-    }
+        "Заработано": earned,  # теперь это Доход − Расход
+    } 
 
 # Статичная клавиатура с кнопкой "Меню" под полем ввода
 def persistent_menu_keyboard():
@@ -1093,9 +1107,10 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             client = get_gspread_client()
             s = compute_summary(client)
+
             text = (
                 f"🏁 Начальная сумма: {_fmt_amount(s['Начальная'])}\n"
-                f"💼 Заработано: {_fmt_amount(s['Заработано'])}\n"
+                f"💼 Чистая прибыль (Доход − Расход): {_fmt_amount(s['Заработано'])}\n"
                 f"💰 Доход: {_fmt_amount(s['Доход'])}\n"
                 f"💸 Расход: {_fmt_amount(s['Расход'])}\n"
                 f"\n"
@@ -1103,6 +1118,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"💳 Карта: {_fmt_amount(s['Карта'])}\n"
                 f"💵 Наличные: {_fmt_amount(s['Наличные'])}"
             )
+
             keyboard = InlineKeyboardMarkup(
                 [
                     [
@@ -1116,6 +1132,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Ошибка баланса: {e}")
             await query.message.reply_text("⚠️ Не удалось получить баланс.")
+        return
 
     elif data in ["report_7", "report_30"]:
         days = 7 if data == "report_7" else 30
