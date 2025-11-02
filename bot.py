@@ -337,7 +337,39 @@ REMINDER_CHAT_ID = -1002522776417
 GOOGLE_CREDENTIALS_B64 = os.getenv("GOOGLE_CREDENTIALS_B64")
 SPREADSHEET_ID = "1qjVJZUqm1hT5IkrASq-_iL9cc4wDl8fdjvd7KDMWL-U"
 
-INITIAL_BALANCE = Decimal("21263.99")  # 🏁 Начальная сумма
+# ---- KV в листе "Сводка": две колонки [Ключ | Значение] ----
+
+def _summary_get(client, key: str, default: str = "") -> str:
+    ws = client.open_by_key(SPREADSHEET_ID).worksheet("Сводка")
+    rows = ws.get_all_values()
+    for r in rows:
+        if not r:
+            continue
+        if (r[0] or "").strip() == key:
+            return (r[1] or "").strip() if len(r) > 1 else default
+    return default
+
+def _summary_set(client, key: str, value: str) -> None:
+    ws = client.open_by_key(SPREADSHEET_ID).worksheet("Сводка")
+    rows = ws.get_all_values()
+    # попытка обновить существующую строку
+    for i, r in enumerate(rows, start=1):
+        if r and (r[0] or "").strip() == key:
+            ws.update_cell(i, 2, value)  # кол. B = Значение
+            return
+    # иначе добавим строку
+    ws.append_row([key, value], value_input_option="USER_ENTERED")
+
+def get_initial_balance(client) -> Decimal:
+    s = _summary_get(client, "INITIAL_BALANCE", "0")
+    try:
+        return _to_amount(s)
+    except Exception:
+        return Decimal("0")
+
+def set_initial_balance(client, val: Decimal) -> None:
+    _summary_set(client, "INITIAL_BALANCE", str(val.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)))
+
 
 
 def get_gspread_client():
@@ -380,7 +412,6 @@ def _fmt_amount(val):
 
 def compute_balance(client):
     """
-    Новый формат (лист 'Сводка' и записи в Доход/Расход):
     - Доход/Расход: [Дата, КатID, Категория, 💳 D, 💵 E, 📝]
     - Наличные = SUM(Доход!E) - SUM(Расход!E)
     - Карта     = INITIAL_BALANCE + SUM(Доход!D) - SUM(Расход!D)
@@ -395,30 +426,26 @@ def compute_balance(client):
     income_card = Decimal("0")
     income_cash = Decimal("0")
     for r in income_rows:
-        if len(r) > 3: income_card += _to_amount(r[3])  # 💳 D
-        if len(r) > 4: income_cash += _to_amount(r[4])  # 💵 E
+        if len(r) > 3: income_card += _to_amount(r[3])
+        if len(r) > 4: income_cash += _to_amount(r[4])
 
     expense_card = Decimal("0")
     expense_cash = Decimal("0")
     for r in expense_rows:
-        if len(r) > 3: expense_card += _to_amount(r[3])  # 💳 D
-        if len(r) > 4: expense_cash += _to_amount(r[4])  # 💵 E
+        if len(r) > 3: expense_card += _to_amount(r[3])
+        if len(r) > 4: expense_cash += _to_amount(r[4])
+
+    initial = get_initial_balance(client)
 
     cash  = income_cash - expense_cash
-    card  = INITIAL_BALANCE + income_card - expense_card
+    card  = initial + income_card - expense_card
     total = card + cash
 
-    return {"Баланс": total, "Карта": card, "Наличные": cash}
+    return {"Баланс": total, "Карта": card, "Наличные": cash, "Начальная": initial}
 
 def compute_summary(client):
     """
-    Возвращает набор показателей как в 'Сводка' под НОВЫЙ формат:
-    - Доход = SUM(Доход!D:E)
-    - Расход = SUM(Расход!D:E)
-    - Наличные = SUM(Доход!E) - SUM(Расход!E)
-    - Карта = INITIAL_BALANCE + SUM(Доход!D) - SUM(Расход!D)
-    - Баланс = Карта + Наличные
-    - Заработано = Доход - Начальная сумма  (как у тебя)
+    Возвращает показатели, читая INITIAL_BALANCE из листа 'Сводка'
     """
     income_ws = client.open_by_key(SPREADSHEET_ID).worksheet("Доход")
     expense_ws = client.open_by_key(SPREADSHEET_ID).worksheet("Расход")
@@ -429,25 +456,27 @@ def compute_summary(client):
     income_card = Decimal("0")
     income_cash = Decimal("0")
     for r in income_rows:
-        if len(r) > 3: income_card += _to_amount(r[3])  # 💳 D
-        if len(r) > 4: income_cash += _to_amount(r[4])  # 💵 E
+        if len(r) > 3: income_card += _to_amount(r[3])
+        if len(r) > 4: income_cash += _to_amount(r[4])
 
     expense_card = Decimal("0")
     expense_cash = Decimal("0")
     for r in expense_rows:
-        if len(r) > 3: expense_card += _to_amount(r[3])  # 💳 D
-        if len(r) > 4: expense_cash += _to_amount(r[4])  # 💵 E
+        if len(r) > 3: expense_card += _to_amount(r[3])
+        if len(r) > 4: expense_cash += _to_amount(r[4])
 
     income_total  = income_card + income_cash
     expense_total = expense_card + expense_cash
 
-    cash  = income_cash - expense_cash
-    card  = INITIAL_BALANCE + income_card - expense_card
+    initial = get_initial_balance(client)
+
+    cash    = income_cash - expense_cash
+    card    = initial + income_card - expense_card
     balance = card + cash
-    earned  = income_total - INITIAL_BALANCE
+    earned  = income_total - initial
 
     return {
-        "Начальная": INITIAL_BALANCE,
+        "Начальная": initial,
         "Доход": income_total,
         "Расход": expense_total,
         "Наличные": cash,
@@ -528,12 +557,41 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     elif data == "settings":
-        # Главное меню настроек
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("🗂 Настройки категорий", callback_data="cat_settings")],
+            [InlineKeyboardButton("💼 Настройки баланса", callback_data="balance_settings")],
             [InlineKeyboardButton("⬅️ Назад", callback_data="menu")],
         ])
         await query.edit_message_text("⚙️ Настройки:", reply_markup=kb)
+        return
+
+    elif data == "balance_settings":
+        try:
+            client = get_gspread_client()
+            init = get_initial_balance(client)
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("✏️ Изменить начальную сумму", callback_data="balance_init_edit")],
+                [InlineKeyboardButton("⬅️ Назад", callback_data="settings")],
+            ])
+            await query.edit_message_text(
+                f"💼 Настройки баланса\n\n"
+                f"🏁 Текущая начальная сумма: {_fmt_amount(init)}",
+                reply_markup=kb
+            )
+        except Exception as e:
+            logger.error(f"balance_settings error: {e}")
+            await query.edit_message_text("⚠️ Не удалось загрузить настройки баланса.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="settings")]]))
+        return
+
+    elif data == "balance_init_edit":
+        # запускаем ввод значения
+        context.user_data.clear()
+        context.user_data["action"] = "balance_init_edit"
+        context.user_data["return_cb"] = "balance_settings"
+        await query.edit_message_text(
+            "Введите новую начальную сумму (например 20000.00):",
+            reply_markup=back_or_cancel_keyboard("balance_settings")
+        )
         return
 
     elif data == "cat_settings":
@@ -1193,6 +1251,47 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
             [InlineKeyboardButton("❌ Отмена",   callback_data="cancel")],
         ])
         await update.message.reply_text("Выберите источник:", reply_markup=kb)
+
+    # --- Редактирование начальной суммы баланса ---
+    if context.user_data.get("action") == "balance_init_edit":
+        return_cb = context.user_data.get("return_cb", "balance_settings")
+        txt = (update.message.text or "").strip()
+        try:
+            val = _to_amount(txt)
+            if val < 0:
+                raise ValueError("negative")
+        except Exception:
+            await update.message.reply_text(
+                "❌ Введите корректное неотрицательное число (пример: 15000.00).",
+                reply_markup=back_or_cancel_keyboard(return_cb)
+            )
+            return
+        try:
+            client = get_gspread_client()
+            set_initial_balance(client, val)
+            context.user_data.clear()
+
+            # покажем текущий баланс после изменения
+            live = compute_summary(client)
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ Назад", callback_data="balance_settings")],
+                [InlineKeyboardButton("🏠 Меню",  callback_data="menu")],
+            ])
+            await update.message.reply_text(
+                "✅ Начальная сумма обновлена.\n\n"
+                f"🏁 Начальная: {_fmt_amount(live['Начальная'])}\n"
+                f"💼 Баланс:    {_fmt_amount(live['Баланс'])}\n"
+                f"💳 Карта:     {_fmt_amount(live['Карта'])}\n"
+                f"💵 Наличные:  {_fmt_amount(live['Наличные'])}",
+                reply_markup=kb
+            )
+        except Exception as e:
+            logger.error(f"set_initial_balance error: {e}")
+            await update.message.reply_text(
+                "⚠️ Не удалось сохранить начальную сумму.",
+                reply_markup=back_or_cancel_keyboard(return_cb)
+            )
+        return
 
     # ====== ШАГ ВВОДА СУММЫ ======
     if step == "amount":
