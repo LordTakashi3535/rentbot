@@ -225,25 +225,34 @@ def get_frozen_totals(client):
             pass
     return {"card": card, "cash": cash, "total": card + cash}
 
-def ensure_ws_with_headers(client, sheet_name: str, headers: list[str]) -> gspread.Worksheet:
-    """
-    Возвращает лист по имени. Если листа нет — создаёт.
-    Если лист пустой — записывает шапку headers.
-    ВНИМАНИЕ: отступы только пробелами (4 пробела).
-    """
-    ss = client.open_by_key(SPREADSHEET_ID)
-    try:
-        ws = ss.worksheet(sheet_name)
-    except gspread.exceptions.WorksheetNotFound:
-        ws = ss.add_worksheet(title=sheet_name, rows=200, cols=max(len(headers), 6))
-        if headers:
-            ws.append_row(headers, value_input_option="USER_ENTERED")
-        return ws
-
+def ensure_ws_with_headers(client, sheet_name: str, headers: list[str]):
+    ws = client.open_by_key(SPREADSHEET_ID).worksheet(sheet_name)
     rows = ws.get_all_values()
-    if not rows and headers:
-        ws.append_row(headers, value_input_option="USER_ENTERED")
+    if not rows:
+        # создаём шапку 1-й строкой
+        last_col_letter = chr(64 + len(headers))  # D для 4-х колонок
+        ws.update(f"A1:{last_col_letter}1", [headers])
+    else:
+        # мягко дополним недостающие заголовки
+        header = rows[0]
+        for i, h in enumerate(headers, start=1):
+            cur = header[i-1].strip() if i-1 < len(header) else ""
+            if not cur:
+                ws.update_cell(1, i, h)
     return ws
+
+def _safe_idx(header: list[str]) -> dict:
+    return { (h or "").strip(): i for i, h in enumerate(header) }
+
+def _get_row_by_id(ws, car_id: str):
+    rows = ws.get_all_values()
+    if not rows or len(rows) < 2:
+        return None, None, None  # row, header, idx
+    header = rows[0]
+    for r in rows[1:]:
+        if r and (r[0] or "").strip() == car_id:
+            return r, header, _safe_idx(header)
+    return None, header, _safe_idx(header)
 
 # === Dynamic Categories & Records ===
 from typing import Optional, List, Dict, Tuple, Union
@@ -1128,38 +1137,32 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             client = get_gspread_client()
             ws = ensure_ws_with_headers(client, WORKSHOP_SHEET, WORKSHOP_HEADERS)
-            rows = ws.get_all_values()
-            header = rows[0]
-            idx = {h.strip(): i for i, h in enumerate(header)}
 
-            row = None
-            for r in rows[1:]:
-                if r and (r[0] or "").strip() == car_id:
-                    row = r
-                    break
-            if not row:
-                await query.edit_message_text(
-                    "🚫 Машина не найдена.",
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="workshop")]])
-                )
+            row, header, idx = _get_row_by_id(ws, car_id)
+            if row is None:
+                kb = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="workshop")]])
+                await query.edit_message_text("🚫 Машина не найдена в листе «Мастерская».", reply_markup=kb)
                 return
 
-            name = (row[idx.get("Название", 1)] if len(row) > 1 else "") or "(без названия)"
-            vin  = (row[idx.get("VIN", 2)] if len(row) > 2 else "") or "—"
+            def g(col_name: str, default=""):
+                i = idx.get(col_name, None)
+                return (row[i].strip() if (i is not None and i < len(row) and row[i]) else default)
 
-            # суммы
-            frozen = get_frozen_for_car(client, car_id)
+            name = g("Название", "(без названия)")
+            vin  = g("VIN", "—")
+
+            frozen         = get_frozen_for_car(client, car_id)
             services_total = get_services_total_for_car(client, car_id)
-            all_services = get_services_for_car(client, car_id)
+
+            all_services   = get_services_for_car(client, car_id)
             services_count = len(all_services)
 
-            # последние услуги (до 5)
             recent = get_services_recent_for_car(client, car_id, limit=5)
             if recent:
                 lines = []
-                for dt_str, amt, desc in recent:
-                    desc_q = f" — {desc}" if desc and desc != "-" else ""
-                    lines.append(f"• {dt_str}: {_fmt_amount(amt)}{desc_q}")
+                for _dt, amt, desc in recent:  # дату не выводим
+                    tail = f" — {desc}" if desc and desc != "-" else ""
+                    lines.append(f"• {_fmt_amount(amt)}{tail}")
                 services_list_block = "Последние услуги:\n" + "\n".join(lines) + "\n"
             else:
                 services_list_block = ""
@@ -1181,11 +1184,11 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("⬅️ Назад", callback_data="workshop")],
             ])
             await query.edit_message_text(text, reply_markup=kb, parse_mode="Markdown")
+
         except Exception as e:
             logger.error(f"workshop_view error: {e}")
             await query.message.reply_text("⚠️ Не удалось открыть карточку машины.")
         return
-
 
     elif data.startswith("workshop_buy_parts:"):
         car_id = data.split(":", 1)[1]
@@ -1233,17 +1236,20 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         car_id = data.split(":", 1)[1]
         try:
             client = get_gspread_client()
-            # прочитаем карточку
             ws = ensure_ws_with_headers(client, WORKSHOP_SHEET, WORKSHOP_HEADERS)
-            rows = ws.get_all_values()
-            header = rows[0] if rows else []
-            idx = {h.strip(): i for i, h in enumerate(header)}
-            car_name = "(без названия)"; car_vin = "—"
-            for r in rows[1:]:
-                if r and (r[0] or "").strip() == car_id:
-                    car_name = (r[idx.get("Название", 1)] if len(r) > 1 else "") or "(без названия)"
-                    car_vin  = (r[idx.get("VIN", 2)] if len(r) > 2 else "") or "—"
-                    break
+
+            row, header, idx = _get_row_by_id(ws, car_id)
+            if row is None:
+                kb = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="workshop")]])
+                await query.edit_message_text("🚫 Машина не найдена в листе «Мастерская».", reply_markup=kb)
+                return
+
+            def g(col_name: str, default=""):
+                i = idx.get(col_name, None)
+                return (row[i].strip() if (i is not None and i < len(row) and row[i]) else default)
+
+            car_name = g("Название", "(без названия)")
+            car_vin  = g("VIN", "—")
 
             frozen_total   = get_frozen_for_car(client, car_id)
             services_total = get_services_total_for_car(client, car_id)
@@ -1256,7 +1262,6 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 return
 
-            # контекст мастера
             context.user_data.clear()
             context.user_data["action"]         = "ws_finish"
             context.user_data["car_id"]         = car_id
@@ -1281,24 +1286,6 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"workshop_finish start error: {e}")
             await query.message.reply_text("⚠️ Не удалось начать завершение ремонта.")
-        return
-
-    elif data.startswith("ws_finish_src_frozen:"):
-        _, src, car_id = data.split(":", 2)
-        dest_frozen = "Карта" if src == "card" else "Наличные"
-        context.user_data["action"] = "ws_finish"
-        context.user_data["step"]   = "ws_finish_src_income"
-        context.user_data["dest_frozen"] = dest_frozen
-
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("💳 На карту",    callback_data=f"ws_finish_src_income:card:{car_id}")],
-            [InlineKeyboardButton("💵 В наличные", callback_data=f"ws_finish_src_income:cash:{car_id}")],
-            [InlineKeyboardButton("⬅️ Назад",      callback_data=f"workshop_finish:{car_id}")],
-        ])
-        await query.edit_message_text(
-            "Куда зачислить *доход по услугам*?",
-            reply_markup=kb, parse_mode="Markdown"
-        )
         return
 
     elif data.startswith("ws_finish_src_income:"):
