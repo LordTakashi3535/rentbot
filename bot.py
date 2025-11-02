@@ -50,32 +50,46 @@ def _ensure_freeze_ws(client):
         logger.error(f"freeze sheet migrate error: {e}")
     return ws
 
+def _norm_source(s: str) -> str:
+    s = (s or "").strip().lower()
+    # любые варианты "нал", "наличка", "наличные"
+    if s.startswith("нал") or "налич" in s:
+        return "Наличные"
+    # любые варианты "кар", "карта", возможно visa/master
+    if s.startswith("кар") or "visa" in s or "master" in s:
+        return "Карта"
+    # если пришло "cash"/"card"
+    if s in ("cash", "нал", "nal"):  # на всякий
+        return "Наличные"
+    if s in ("card", "kart", "karta"):
+        return "Карта"
+    return s.capitalize() if s else ""
+
+
 def get_frozen_breakdown_for_car(client, car_id: str):
-    """
-    Возвращает словарь с разбивкой по источникам и количеством позиций:
-    {'card': Decimal, 'cash': Decimal, 'total': Decimal, 'count': int}
-    """
     ws = _ensure_freeze_ws(client)
     rows = ws.get_all_values()
+    from decimal import Decimal
     if not rows:
         return {"card": Decimal("0"), "cash": Decimal("0"), "total": Decimal("0"), "count": 0}
     idx = _freeze_idx(rows[0])
     card = Decimal("0"); cash = Decimal("0"); cnt = 0
     for r in rows[1:]:
-        if not r:
+        if not r: 
             continue
         if idx["carid"] is None or idx["carid"] >= len(r):
             continue
         if (r[idx["carid"]] or "").strip() != car_id:
             continue
         amt = _to_amount(r[idx["amount"]]) if (idx["amount"] is not None and idx["amount"] < len(r)) else Decimal("0")
-        src = (r[idx["source"]] if (idx["source"] is not None and idx["source"] < len(r)) else "").strip()
+        src_raw = (r[idx["source"]] if (idx["source"] is not None and idx["source"] < len(r)) else "").strip()
+        src = _norm_source(src_raw)  # ← НОРМАЛИЗАЦИЯ
         if src == "Карта":
             card += amt
         elif src == "Наличные":
             cash += amt
         else:
-            # старые строки без источника считаем "без источника" — но в total включаем
+            # неизвестный/пустой источник — не считаем по источникам, но учитываем в total
             pass
         cnt += 1
     return {"card": card, "cash": cash, "total": card + cash, "count": cnt}
@@ -215,13 +229,14 @@ def get_frozen_totals(client):
         if not r:
             continue
         amt = _to_amount(r[idx["amount"]]) if (idx["amount"] is not None and idx["amount"] < len(r)) else Decimal("0")
-        src = (r[idx["source"]] if (idx["source"] is not None and idx["source"] < len(r)) else "").strip()
+        raw_src = (r[idx["source"]] if (idx["source"] is not None and idx["source"] < len(r)) else "").strip()
+        src = _norm_source(raw_src)  # ← нормализуем перед сравнением
         if src == "Карта":
             card += amt
         elif src == "Наличные":
             cash += amt
         else:
-            # старые строки без источника не учитываем в разрезе источников
+            # старые/пустые значения источника игнорим в разрезе, но total посчитается из суммы card+cash
             pass
     return {"card": card, "cash": cash, "total": card + cash}
 
@@ -1371,12 +1386,23 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             from decimal import Decimal
             client = get_gspread_client()
 
-            # --- читаем всё, что набрали на предыдущих шагах мастера ---
-            car_name    = context.user_data.get("car_name", "(без названия)")
-            dest_frozen = context.user_data.get("dest_frozen", "Карта")     # куда вернуть заморозку
-            dest_income = context.user_data.get("dest_income", "Карта")     # куда зачислить доход
+            car_name = context.user_data.get("car_name", "(без названия)")
+            # НЕ даём дефолтов — заставим выбрать явно
+            dest_frozen = context.user_data.get("dest_frozen")
+            dest_income = context.user_data.get("dest_income")
             frozen_total   = context.user_data.get("frozen_total", Decimal("0"))
             services_total = context.user_data.get("services_total", Decimal("0"))
+
+            # Если не выбрано — просим выбрать и выходим
+            if dest_frozen not in ("Карта", "Наличные") or dest_income not in ("Карта", "Наличные"):
+                kb = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅️ Назад", callback_data=f"workshop_finish:{car_id}")]
+                ])
+                await query.edit_message_text(
+                    "Не выбран кошелёк для заморозки и/или дохода. Пожалуйста, укажи оба направления.",
+                    reply_markup=kb
+                )
+                return
 
             # --- безопасная разбивка заморозки по источникам (попробуем штатную функцию, иначе – fallback) ---
             try:
@@ -1422,10 +1448,16 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             # если просили вернуть заморозку в другой источник — сделаем реаллокацию
             if dest_frozen == "Карта":
-                _append_transfer(fz_br["cash"], "cash_to_card")
+                move_amt = fz_br["cash"]
+                # fallback: если источники неизвестны, но total>0 — переложим всю сумму в выбранный источник
+                if move_amt == 0 and fz_br["total"] > 0 and fz_br["card"] == 0:
+                    move_amt = fz_br["total"]
+                _append_transfer(move_amt, "cash_to_card")
             else:
-                _append_transfer(fz_br["card"], "card_to_cash")
-
+                move_amt = fz_br["card"]
+                if move_amt == 0 and fz_br["total"] > 0 and fz_br["cash"] == 0:
+                    move_amt = fz_br["total"]
+                _append_transfer(move_amt, "card_to_cash")
             # --- Доход по услугам: категория «Ремонт» ---
             try:
                 cat_id, cat_name = ensure_category_by_name("Доход", "Ремонт")
@@ -1528,6 +1560,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["action"] = "ws_buy"
         context.user_data["step"] = "ws_buy_desc"
         context.user_data["source"] = source
+        context.user_data["ws_freeze_source"] = source  # ← дублируем для совместимости
         # car_id/имя/vin/amount уже лежат в user_data из предыдущих шагов
         await query.edit_message_text(
             "Добавьте описание (что купили) — можно одним словом:",
@@ -2424,15 +2457,14 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
                 car_name = context.user_data.get("car_name") or "(без названия)"
                 car_vin  = context.user_data.get("car_vin") or "—"
                 amount   = context.user_data.get("amount", Decimal("0"))
-                source   = context.user_data.get("source", "")  # "Карта" / "Наличные"
-                rec_id   = datetime.datetime.now().strftime("fz_%Y%m%d_%H%M%S")
+                raw_source = context.user_data.get("source", "")  # "Карта" / "Наличные" / возможные варианты
+                source = _norm_source(raw_source) or "Карта"      # подстрахуемся дефолтом
+                rec_id = datetime.datetime.now().strftime("fz_%Y%m%d_%H%M%S")
 
-                # пишем с колонкой «Источник» (если лист старый — просто добавится лишняя колонка)
                 ws.append_row(
                     [rec_id, car_id, car_name, car_vin, now, source, str(amount.quantize(Decimal("0.01"))), desc],
                     value_input_option="USER_ENTERED"
                 )
-
                 # сумма заморозки по машине
                 frozen = get_frozen_for_car(client, car_id)
 
