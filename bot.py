@@ -7,6 +7,8 @@ import datetime
 import re
 import asyncio
 
+from decimal import Decimal, ROUND_HALF_UP
+
 DATE_FMT = "%d.%m.%Y %H:%M"  # как пишем в листы
 
 def _parse_dt_safe(s: str):
@@ -386,8 +388,6 @@ def _format_date_with_days(date_str: str) -> str:
     except Exception:
         return "неверный формат"
 
-
-from decimal import Decimal, ROUND_HALF_UP
 
 from oauth2client.service_account import ServiceAccountCredentials
 
