@@ -18,7 +18,7 @@ def _parse_dt_safe(s: str):
         except ValueError:
             pass
     return None
-    
+
 WORKSHOP_SHEET = "Мастерская"
 WORKSHOP_HEADERS = ["ID", "Название", "VIN", "Создано"]
 
@@ -611,22 +611,27 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     elif data == "workshop":
-        client = get_gspread_client()
-        ws = ensure_ws_with_headers(client, WORKSHOP_SHEET, WORKSHOP_HEADERS)
-        rows = ws.get_all_values()[1:]
+        try:
+            client = get_gspread_client()
+            ws = ensure_ws_with_headers(client, WORKSHOP_SHEET, WORKSHOP_HEADERS)
+            rows = ws.get_all_values()[1:]  # пропускаем шапку
 
             if not rows:
                 kb = InlineKeyboardMarkup([
                     [InlineKeyboardButton("➕ Добавить машину", callback_data="workshop_add")],
                     [InlineKeyboardButton("⬅️ Назад", callback_data="menu")],
                 ])
-                await query.edit_message_text("🧰 *Автомастерская*\n\nСписок пуст.", reply_markup=kb, parse_mode="Markdown")
+                await query.edit_message_text(
+                    "🧰 *Автомастерская*\n\nСписок пуст.",
+                    reply_markup=kb,
+                    parse_mode="Markdown"
+                )
                 return
 
             # кнопки по машинам
             buttons = []
             for r in rows:
-                if not r: 
+                if not r:
                     continue
                 car_id = (r[0] or "").strip()
                 name   = (r[1] or "").strip() or "(без названия)"
@@ -635,14 +640,15 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             buttons.append([InlineKeyboardButton("➕ Добавить машину", callback_data="workshop_add")])
             buttons.append([InlineKeyboardButton("⬅️ Назад", callback_data="menu")])
 
-            await query.edit_message_text("🧰 *Автомастерская* — выберите машину:", 
-                                        reply_markup=InlineKeyboardMarkup(buttons),
-                                        parse_mode="Markdown")
+            await query.edit_message_text(
+                "🧰 *Автомастерская* — выберите машину:",
+                reply_markup=InlineKeyboardMarkup(buttons),
+                parse_mode="Markdown"
+            )
         except Exception as e:
             logger.error(f"workshop list error: {e}")
             await query.message.reply_text("⚠️ Не удалось открыть Автомастерскую.")
-        return
-    
+        return 
 
     elif data == "settings":
         kb = InlineKeyboardMarkup([
