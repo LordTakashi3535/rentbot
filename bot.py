@@ -936,29 +936,33 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     row = r
                     break
             if not row:
-                await query.edit_message_text("🚫 Машина не найдена.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="workshop")]]))
+                await query.edit_message_text(
+                    "🚫 Машина не найдена.",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="workshop")]])
+                )
                 return
 
-            car_name = (row[idx.get("Название",1)] if len(row)>1 else "") or "(без названия)"
-            car_vin  = (row[idx.get("VIN",2)] if len(row)>2 else "") or "—"
+            car_name = (row[idx.get("Название", 1)] if len(row) > 1 else "") or "(без названия)"
+            car_vin  = (row[idx.get("VIN", 2)] if len(row) > 2 else "") or "—"
         except Exception as e:
             logger.error(f"workshop_buy_parts fetch car error: {e}")
             await query.message.reply_text("⚠️ Не удалось открыть машину.")
             return
 
-    context.user_data.clear()
-    context.user_data["action"]   = "ws_buy"
-    context.user_data["car_id"]   = car_id
-    context.user_data["car_name"] = car_name
-    context.user_data["car_vin"]  = car_vin
-    context.user_data["step"]     = "ws_buy_amount"
+        # ⬇️ Вот эти строки ДОЛЖНЫ быть внутри этого elif (с тем же отступом, что и выше)
+        context.user_data.clear()
+        context.user_data["action"]   = "ws_buy"
+        context.user_data["car_id"]   = car_id
+        context.user_data["car_name"] = car_name
+        context.user_data["car_vin"]  = car_vin
+        context.user_data["step"]     = "ws_buy_amount"
 
-    await query.edit_message_text(
-        f"🧾 *Покупка запчастей* для *{car_name}*\n🔑 VIN: `{car_vin}`\n\nВведите сумму:",
-        reply_markup=back_or_cancel_keyboard(f"workshop_view:{car_id}"),
-        parse_mode="Markdown"
-    )
-    return
+        await query.edit_message_text(
+            f"🧾 *Покупка запчастей* для *{car_name}*\n🔑 VIN: `{car_vin}`\n\nВведите сумму:",
+            reply_markup=back_or_cancel_keyboard(f"workshop_view:{car_id}"),
+            parse_mode="Markdown"
+        )
+        return
 
     elif data.startswith("income_cat|"):
         cat_id = data.split("|", 1)[1]
