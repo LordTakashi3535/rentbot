@@ -3618,3 +3618,93 @@ try:
 except Exception as _e:
     logging.warning(f"Unified mode patch failed: {_e}")
 # === END UNIFIED ===
+
+
+
+# === UNIFIED REDIRECT FOR Spreadsheet.worksheet(...) ===
+# If someone calls sh.worksheet("Услуги") or sh.worksheet("Заморозка") when those sheets
+# no longer exist, we return a proxy view that points to the master sheet "Мастерская".
+
+try:
+    import gspread
+    from gspread.models import Spreadsheet as _SS, Worksheet as _WS
+
+    class _UnifiedSheetView:
+        def __init__(self, spreadsheet, master_ws, logical_name, logical_type):
+            self.spreadsheet = spreadsheet
+            self._master = master_ws
+            self.title = logical_name
+            self._type = logical_type  # "FREEZE" or "SERVICE"
+
+        # READS
+        def get_all_values(self, *args, **kwargs):
+            rows = _WS.get_all_values(self._master, *args, **kwargs)
+            if not rows:
+                rows = [MASTER_HEADERS]
+            header = rows[0]
+            idx = {h: i for i, h in enumerate(header)}
+            out = []
+            if self._type == UNIFIED_TYPE_FREEZE:
+                out.append(["ID","CarID","Название","VIN","Дата","Источник","Сумма","Описание"])
+                for r in rows[1:]:
+                    if r and (r[0] or "").strip().upper() == UNIFIED_TYPE_FREEZE:
+                        out.append(_map_master_to_freeze_row(idx, r))
+            else:
+                out.append(["ID","CarID","Название","VIN","Дата","Сумма","Описание"])
+                for r in rows[1:]:
+                    if r and (r[0] or "").strip().upper() == UNIFIED_TYPE_SERVICE:
+                        out.append(_map_master_to_service_row(idx, r))
+            return out
+
+        def row_values(self, n: int):
+            vals = self.get_all_values()
+            return vals[0] if (n == 1 and vals) else []
+
+        # WRITES
+        def append_row(self, values, *args, **kwargs):
+            if self._type == UNIFIED_TYPE_FREEZE:
+                v = (values + [""]*8)[:8]
+                row = [UNIFIED_TYPE_FREEZE, v[0], v[1], v[2], v[3], "", v[4], _norm_source(v[5]) if '_norm_source' in globals() else v[5], v[6], v[7], ""]
+            else:
+                v = (values + [""]*7)[:7]
+                row = [UNIFIED_TYPE_SERVICE, v[0], v[1], v[2], v[3], "", v[4], "", v[5], v[6], ""]
+            return _WS.append_row(self._master, row, *args, **kwargs)
+
+        def delete_rows(self, index, *args, **kwargs):
+            all_rows = _WS.get_all_values(self._master)
+            if not all_rows: return
+            type_tag = UNIFIED_TYPE_FREEZE if self._type == UNIFIED_TYPE_FREEZE else UNIFIED_TYPE_SERVICE
+            hits = [i for i, r in enumerate(all_rows[1:], start=2) if r and (r[0] or "").strip().upper() == type_tag]
+            if 1 <= index-1 < len(hits):
+                master_i = hits[index-1]
+                return _WS.delete_rows(self._master, master_i, *args, **kwargs)
+            # fallback
+            return _WS.delete_rows(self._master, index, *args, **kwargs)
+
+        # NO-OPs to stay compatible with ensure_ws_with_headers migrations
+        def update(self, *args, **kwargs):  # don't touch master header from views
+            return None
+        def update_cell(self, *args, **kwargs):
+            return None
+        def insert_cols(self, *args, **kwargs):
+            return None
+
+    _orig_ss_worksheet = _SS.worksheet
+
+    def _ss_worksheet_unified(self, title):
+        if title in (FREEZE_SHEET, SERVICES_SHEET):
+            try:
+                master = _orig_ss_worksheet(self, WORKSHOP_SHEET)
+            except Exception:
+                # Create master if needed via helper
+                client = get_gspread_client()
+                master = _ensure_master_ws(client)
+            logical_type = UNIFIED_TYPE_FREEZE if title == FREEZE_SHEET else UNIFIED_TYPE_SERVICE
+            return _UnifiedSheetView(self, master, title, logical_type)
+        return _orig_ss_worksheet(self, title)
+
+    _SS.worksheet = _ss_worksheet_unified
+
+except Exception as e:
+    logging.warning(f"Unified redirect patch failed: {e}")
+# === END REDIRECT ===
