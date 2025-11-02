@@ -62,6 +62,51 @@ def list_categories(kind: str):
     out.sort(key=lambda x: (x["Порядок"], x["Название"].lower()))
     return out
 
+def get_all_categories(kind: str):
+    """ВСЕ категории данного типа ('Доход'/'Расход'), включая неактивные."""
+    client = get_gspread_client()
+    ws = get_cats_ws(client)
+    rows = ws.get_all_values()
+    if not rows or len(rows) < 2:
+        return []
+    header = rows[0]
+    idx = {h.strip(): i for i, h in enumerate(header)}
+    out = []
+    for r in rows[1:]:
+        if not r:
+            continue
+        if not all(k in idx for k in ("ID", "Тип", "Название", "Активна")):
+            continue
+        if any(idx[k] >= len(r) for k in ("ID","Тип","Название","Активна")):
+            continue
+        if r[idx["Тип"]].strip() != kind:
+            continue
+        out.append({
+            "ID": r[idx["ID"]].strip(),
+            "Название": r[idx["Название"]].strip(),
+            "Активна": r[idx["Активна"]].strip(),
+            "_row": r,  # на всякий
+        })
+    return out
+
+def delete_category(cat_id: str) -> bool:
+    """Удаляет строку категории по ID. Возвращает True/False."""
+    client = get_gspread_client()
+    ws = get_cats_ws(client)
+    rows = ws.get_all_values()
+    if not rows or len(rows) < 2:
+        return False
+    header = rows[0]
+    try:
+        id_idx = header.index("ID")
+    except ValueError:
+        return False
+    for i, r in enumerate(rows[1:], start=2):
+        if id_idx < len(r) and (r[id_idx] or "").strip() == cat_id.strip():
+            ws.delete_rows(i)
+            return True
+    return False
+
 def _sum_sheet_period(client, sheet_name: str, days: int):
     """
     Возвращает (total_card, total_cash, rows_filtered)
@@ -423,15 +468,15 @@ async def _show_categories_view(query, kind: str):
     cats = list_categories(kind)
     if not cats:
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("➕ Добавить категорию", callback_data=f"cat_add|{kind}")],
             [InlineKeyboardButton("⬅️ Назад", callback_data="menu")],
         ])
         await query.edit_message_text(f"Нет категорий для {kind.lower()}а.", reply_markup=kb)
         return
+
     cbp = "income_cat" if kind == "Доход" else "expense_cat"
     buttons = [[InlineKeyboardButton(c["Название"], callback_data=f"{cbp}|{c['ID']}")] for c in cats]
-    buttons.append([InlineKeyboardButton("➕ Добавить категорию", callback_data=f"cat_add|{kind}")])
     buttons.append([InlineKeyboardButton("⬅️ Назад", callback_data="menu")])
+
     await query.edit_message_text(
         f"{'📥' if kind=='Доход' else '📤'} Категории {kind.lower()}:",
         reply_markup=InlineKeyboardMarkup(buttons)
@@ -465,6 +510,12 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def cancel_keyboard():
     return InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="cancel")]])
 
+def back_or_cancel_keyboard(back_cb: str):
+    """Клавиатура с кнопками 'Назад' и 'Отмена'."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("⬅️ Назад",  callback_data=back_cb)],
+        [InlineKeyboardButton("❌ Отмена", callback_data="cancel")],
+    ])    
 
 async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -474,6 +525,88 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "cancel" or data == "menu":
         context.user_data.clear()
         await menu_command(update, context)
+        return
+
+    elif data == "settings":
+        # Главное меню настроек
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🗂 Настройки категорий", callback_data="cat_settings")],
+            [InlineKeyboardButton("⬅️ Назад", callback_data="menu")],
+        ])
+        await query.edit_message_text("⚙️ Настройки:", reply_markup=kb)
+        return
+
+    elif data == "cat_settings":
+        # Выбор типа категорий
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📥 Доход", callback_data="cat_settings_kind|Доход")],
+            [InlineKeyboardButton("📤 Расход", callback_data="cat_settings_kind|Расход")],
+            [InlineKeyboardButton("⬅️ Назад", callback_data="settings")],
+        ])
+        await query.edit_message_text("🗂 Что настраиваем?", reply_markup=kb)
+        return
+
+    elif data.startswith("cat_settings_kind|"):
+        kind = data.split("|", 1)[1]  # 'Доход' или 'Расход'
+        # список всех категорий (включая неактивные)
+        cats = get_all_categories(kind)
+        rows = []
+        for c in cats:
+            # Кнопка удаления для каждой категории
+            rows.append([InlineKeyboardButton(f"🗑 {c['Название']}", callback_data=f"cat_del|{c['ID']}|{kind}")])
+
+        # Кнопки "добавить" и "назад"
+        rows.append([InlineKeyboardButton(f"➕ Добавить категорию для {kind.lower()}а", callback_data=f"cat_add|{kind}")])
+        rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="cat_settings")])
+
+        await query.edit_message_text(
+            f"🗂 Категории ({kind}):\nНажми на 🗑 чтобы удалить, или ➕ чтобы добавить.",
+            reply_markup=InlineKeyboardMarkup(rows)
+        )
+        return
+
+    elif data.startswith("cat_del|"):
+        # Формат: cat_del|<cat_id>|<kind>
+        _, cat_id, kind = data.split("|", 2)
+        # имя категории для красоты (если не найдём — покажем ID)
+        try:
+            cat_name = get_category_name(cat_id) or cat_id
+        except Exception:
+            cat_name = cat_id
+
+        back_cb = f"cat_settings_kind|{kind}"
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Да, удалить", callback_data=f"cat_del_yes|{cat_id}|{kind}")],
+            [InlineKeyboardButton("⬅️ Назад", callback_data=back_cb)],
+        ])
+        await query.edit_message_text(
+            f"Удалить категорию «{cat_name}»?",
+            reply_markup=kb
+        )
+        return
+
+    elif data.startswith("cat_del_yes|"):
+        # Формат: cat_del_yes|<cat_id>|<kind>
+        _, cat_id, kind = data.split("|", 2)
+        ok = False
+        try:
+            ok = delete_category(cat_id)  # или deactivate_category(cat_id) — если выберешь мягкое отключение
+        except Exception as e:
+            logger.error(f"delete_category error: {e}")
+
+        # Пересобираем список категорий
+        cats = get_all_categories(kind)
+        rows = []
+        for c in cats:
+            rows.append([InlineKeyboardButton(f"🗑 {c['Название']}", callback_data=f"cat_del|{c['ID']}|{kind}")])
+        rows.append([InlineKeyboardButton(f"➕ Добавить категорию для {kind.lower()}а", callback_data=f"cat_add|{kind}")])
+        rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="cat_settings")])
+
+        msg = "✅ Категория удалена." if ok else "⚠️ Не удалось удалить категорию."
+        await query.edit_message_text(
+            f"{msg}\n\n🗂 Категории ({kind}):",
+            reply_markup=InlineKeyboardMarkup(rows)
+        )
         return
 
     elif data == "income":
@@ -548,11 +681,16 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     elif data.startswith("cat_add|"):
-        kind = data.split("|",1)[1]  # "Доход" или "Расход"
+        kind = data.split("|", 1)[1]  # "Доход" или "Расход"
         context.user_data.clear()
         context.user_data["action"] = "cat_add"
         context.user_data["kind"] = kind
-        await query.edit_message_text(f"Введите название новой категории для {kind.lower()}:", reply_markup=cancel_keyboard())
+        # куда вернуться «Назад»: в список категорий этого типа
+        context.user_data["return_cb"] = f"cat_settings_kind|{kind}"
+        await query.edit_message_text(
+            f"Введите название новой категории для {kind.lower()}:",
+            reply_markup=back_or_cancel_keyboard(context.user_data["return_cb"])
+        )
         return
 
     elif data == "cars_edit":
@@ -1230,17 +1368,30 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
     # --- Добавление категории из UI ---
     if context.user_data.get("action") == "cat_add":
         kind = context.user_data.get("kind")
+        return_cb = context.user_data.get("return_cb", "cat_settings")
         name = (update.message.text or "").strip()
+
         if not name:
-            await update.message.reply_text("❌ Название не может быть пустым. Введите ещё раз:")
+            await update.message.reply_text(
+                "❌ Название не может быть пустым. Введите ещё раз:",
+                reply_markup=back_or_cancel_keyboard(return_cb)
+            )
             return
         try:
             add_category(kind, name)
+            # после успеха показываем кнопки назад/меню
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ Назад к списку", callback_data=return_cb)],
+                [InlineKeyboardButton("🏠 Меню", callback_data="menu")],
+            ])
             context.user_data.clear()
-            await update.message.reply_text(f"✅ Категория добавлена: {name}")
+            await update.message.reply_text(f"✅ Категория добавлена: *{name}*", parse_mode="Markdown", reply_markup=kb)
         except Exception as e:
             logger.error(f"cat_add error: {e}")
-            await update.message.reply_text("⚠️ Не удалось добавить категорию. Проверь лист 'Категории'.")
+            await update.message.reply_text(
+                "⚠️ Не удалось добавить категорию. Проверь лист 'Категории'.",
+                reply_markup=back_or_cancel_keyboard(return_cb)
+            )
         return
 
     # --- ДОХОД: карта -> наличные -> описание -> запись ---
