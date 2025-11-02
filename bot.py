@@ -229,13 +229,14 @@ def get_frozen_totals(client):
         if not r:
             continue
         amt = _to_amount(r[idx["amount"]]) if (idx["amount"] is not None and idx["amount"] < len(r)) else Decimal("0")
-        src = (r[idx["source"]] if (idx["source"] is not None and idx["source"] < len(r)) else "").strip()
+        raw_src = (r[idx["source"]] if (idx["source"] is not None and idx["source"] < len(r)) else "").strip()
+        src = _norm_source(raw_src)  # ← нормализуем перед сравнением
         if src == "Карта":
             card += amt
         elif src == "Наличные":
             cash += amt
         else:
-            # старые строки без источника не учитываем в разрезе источников
+            # старые/пустые значения источника игнорим в разрезе, но total посчитается из суммы card+cash
             pass
     return {"card": card, "cash": cash, "total": card + cash}
 
@@ -1385,12 +1386,23 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             from decimal import Decimal
             client = get_gspread_client()
 
-            # --- читаем всё, что набрали на предыдущих шагах мастера ---
-            car_name    = context.user_data.get("car_name", "(без названия)")
-            dest_frozen = context.user_data.get("dest_frozen", "Карта")     # куда вернуть заморозку
-            dest_income = context.user_data.get("dest_income", "Карта")     # куда зачислить доход
+            car_name = context.user_data.get("car_name", "(без названия)")
+            # НЕ даём дефолтов — заставим выбрать явно
+            dest_frozen = context.user_data.get("dest_frozen")
+            dest_income = context.user_data.get("dest_income")
             frozen_total   = context.user_data.get("frozen_total", Decimal("0"))
             services_total = context.user_data.get("services_total", Decimal("0"))
+
+            # Если не выбрано — просим выбрать и выходим
+            if dest_frozen not in ("Карта", "Наличные") or dest_income not in ("Карта", "Наличные"):
+                kb = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅️ Назад", callback_data=f"workshop_finish:{car_id}")]
+                ])
+                await query.edit_message_text(
+                    "Не выбран кошелёк для заморозки и/или дохода. Пожалуйста, укажи оба направления.",
+                    reply_markup=kb
+                )
+                return
 
             # --- безопасная разбивка заморозки по источникам (попробуем штатную функцию, иначе – fallback) ---
             try:
@@ -1486,26 +1498,6 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for i in sorted(to_del, reverse=True):
                 sv_ws.delete_rows(i)
 
-            # удалить саму машину из «Мастерская»
-            try:
-                ws_work = ensure_ws_with_headers(client, WORKSHOP_SHEET, WORKSHOP_HEADERS)
-                rows_w = ws_work.get_all_values()
-                if rows_w:
-                    try:
-                        id_idx = rows_w[0].index("ID")
-                    except ValueError:
-                        id_idx = 0
-                    del_i = None
-                    for i, r in enumerate(rows_w[1:], start=2):
-                        if id_idx < len(r) and (r[id_idx] or "").strip() == car_id:
-                            del_i = i
-                            break
-                    if del_i:
-                        ws_work.delete_rows(del_i)
-            except Exception as e:
-                logger.error(f"workshop delete car after finish error: {e}")
-
-
             # --- пересчёт баланса и заморозок для отчёта ---
             try:
                 live = compute_summary(client)
@@ -1546,7 +1538,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("⬅️ К машине", callback_data=f"workshop_view:{car_id}")],
                 [InlineKeyboardButton("⬅️ К списку", callback_data="workshop")],
             ])
-            await query.edit_message_text(f"✅ Ремонт завершён для *{car_name}*. Данные обновлены.", reply_markup=kb, parse_mode="Markdown")
+            await query.edit_message_text("✅ Ремонт завершён. Данные обновлены.", reply_markup=kb)
 
         except Exception as e:
             err = f"ws_finish_apply error: {type(e).__name__}: {e}"
@@ -1568,6 +1560,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["action"] = "ws_buy"
         context.user_data["step"] = "ws_buy_desc"
         context.user_data["source"] = source
+        context.user_data["ws_freeze_source"] = source  # ← дублируем для совместимости
         # car_id/имя/vin/amount уже лежат в user_data из предыдущих шагов
         await query.edit_message_text(
             "Добавьте описание (что купили) — можно одним словом:",
@@ -2145,7 +2138,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("⚠️ Не удалось загрузить подробности отчёта.")
         return
 
-        # 
+        # ... тут идут другие ветки внутри handle_button ...
 
     elif re.match(r"report_(7|30)_bycat$", data):
         m = re.match(r"report_(7|30)_bycat$", data)
@@ -2464,15 +2457,14 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
                 car_name = context.user_data.get("car_name") or "(без названия)"
                 car_vin  = context.user_data.get("car_vin") or "—"
                 amount   = context.user_data.get("amount", Decimal("0"))
-                source   = context.user_data.get("source", "")  # "Карта" / "Наличные"
-                rec_id   = datetime.datetime.now().strftime("fz_%Y%m%d_%H%M%S")
+                raw_source = context.user_data.get("source", "")  # "Карта" / "Наличные" / возможные варианты
+                source = _norm_source(raw_source) or "Карта"      # подстрахуемся дефолтом
+                rec_id = datetime.datetime.now().strftime("fz_%Y%m%d_%H%M%S")
 
-                # пишем с колонкой «Источник» (если лист старый — просто добавится лишняя колонка)
                 ws.append_row(
                     [rec_id, car_id, car_name, car_vin, now, source, str(amount.quantize(Decimal("0.01"))), desc],
                     value_input_option="USER_ENTERED"
                 )
-
                 # сумма заморозки по машине
                 frozen = get_frozen_for_car(client, car_id)
 
@@ -3387,324 +3379,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-# === PATCH SECTION: rate-limit retries + data normalization (non-invasive) ===
-# These overrides are appended so they don't require changing your existing logic.
-# They add:
-# 1) Automatic retry for READ calls to Google Sheets (get_all_values).
-# 2) Source normalization ("Карта"/"Наличные") when appending to the FREEZE sheet.
-# 3) A more robust get_frozen_totals that normalizes the "Источник" column.
-
-# -- Retry hints used inside wrappers --
-RATE_LIMIT_HINTS = (
-    "RATE_LIMIT_EXCEEDED",
-    "Read requests per minute per user",
-    "RESOURCE_EXHAUSTED",
-    "quota",
-    "429",
-)
-
-def _rate_limited(e: Exception) -> bool:
-    s = str(e)
-    return any(h in s for h in RATE_LIMIT_HINTS)
-
-# -- Monkey-patch gspread Worksheet.get_all_values with exponential backoff --
-try:
-    import gspread
-    from gspread.exceptions import APIError as _GS_APIError
-    import time as _time
-
-    if hasattr(gspread, "models") and hasattr(gspread.models, "Worksheet"):
-        _orig_get_all_values = gspread.models.Worksheet.get_all_values
-
-        def _get_all_values_retry(self, *args, **kwargs):
-            delays = [0.5, 1, 2, 4, 8]
-            last_exc = None
-            for d in delays:
-                try:
-                    return _orig_get_all_values(self, *args, **kwargs)
-                except _GS_APIError as e:
-                    if _rate_limited(e):
-                        last_exc = e
-                        _time.sleep(d)
-                        continue
-                    raise
-            if last_exc:
-                # final attempt
-                return _orig_get_all_values(self, *args, **kwargs)
-            return _orig_get_all_values(self, *args, **kwargs)
-
-        gspread.models.Worksheet.get_all_values = _get_all_values_retry
-except Exception as _e:
-    logging.warning(f"get_all_values retry patch skipped: {_e}")
-
-# -- Monkey-patch Worksheet.append_row to normalize "Источник" in FREEZE sheet --
-try:
-    import gspread
-    _orig_append_row = gspread.models.Worksheet.append_row
-
-    def _append_row_with_norm(self, values, *args, **kwargs):
-        try:
-            title = getattr(self, "title", "")
-        except Exception:
-            title = ""
-        try:
-            # FREEZE_SHEET constant is defined above in your code.
-            if title and 'FREEZE_SHEET' in globals():
-                if title == FREEZE_SHEET and isinstance(values, list) and len(values) >= 6:
-                    # values format: [ID, CarID, Название, VIN, Дата, Источник, Сумма, Описание]
-                    # normalize index 5 (Источник)
-                    raw = values[5] if len(values) > 5 else ""
-                    if '_norm_source' in globals():
-                        norm = _norm_source(str(raw))
-                        values[5] = norm or "Карта"
-        except Exception as _e:
-            # never fail the call because of normalization
-            logging.debug(f"append_row norm skipped: {_e}")
-        return _orig_append_row(self, values, *args, **kwargs)
-
-    gspread.models.Worksheet.append_row = _append_row_with_norm
-except Exception as _e:
-    logging.warning(f"append_row norm patch skipped: {_e}")
-
-# -- Robust get_frozen_totals override (normalizes 'Источник' and uses retried reads) --
-def get_frozen_totals(client):
-    ws = _ensure_freeze_ws(client)
-    rows = ws.get_all_values()
-    if not rows:
-        return {"card": Decimal("0"), "cash": Decimal("0"), "total": Decimal("0")}
-    idx = _freeze_idx(rows[0])
-    card = Decimal("0"); cash = Decimal("0")
-    for r in rows[1:]:
-        if not r:
-            continue
-        amt = _to_amount(r[idx["amount"]]) if (idx["amount"] is not None and idx["amount"] < len(r)) else Decimal("0")
-        raw_src = (r[idx["source"]] if (idx["source"] is not None and idx["source"] < len(r)) else "").strip()
-        src = _norm_source(raw_src) if '_norm_source' in globals() else raw_src
-        if src == "Карта":
-            card += amt
-        elif src == "Наличные":
-            cash += amt
-    return {"card": card, "cash": cash, "total": card + cash}
-# === END PATCH SECTION ===
-
-
-
-# === UNIFIED SINGLE-SHEET MODE (robust monkey-patch) ===
-# Force all reads/writes/deletes targeting "Заморозка" и "Услуги" to go through the ONE sheet "Мастерская".
-# Even if old code calls worksheet("Заморозка") directly, it will be virtualized.
-
-UNIFIED_TYPE_CAR = "CAR"
-UNIFIED_TYPE_FREEZE = "FREEZE"
-UNIFIED_TYPE_SERVICE = "SERVICE"
-
-MASTER_HEADERS = ["Type","ID","CarID","Название","VIN","Номер","Дата","Источник","Сумма","Описание","Статус"]
-
-def _ensure_master_ws(client):
-    ws = ensure_ws_with_headers(client, WORKSHOP_SHEET, MASTER_HEADERS)
-    try:
-        header = ws.row_values(1)
-        if len(header) < len(MASTER_HEADERS):
-            last_col_letter = chr(64 + len(MASTER_HEADERS))
-            ws.update(f"A1:{last_col_letter}1", [MASTER_HEADERS])
-    except Exception as e:
-        logger.warning(f"master header expand warn: {e}")
-    return ws
-
-# Helpers to map rows between views
-def _map_master_to_freeze_row(idx, r):
-    return [
-        r[idx.get("ID",1)] if len(r)>idx.get("ID",1) else "",
-        r[idx.get("CarID",2)] if len(r)>idx.get("CarID",2) else "",
-        r[idx.get("Название",3)] if len(r)>idx.get("Название",3) else "",
-        r[idx.get("VIN",4)] if len(r)>idx.get("VIN",4) else "",
-        r[idx.get("Дата",6)] if len(r)>idx.get("Дата",6) else "",
-        r[idx.get("Источник",7)] if len(r)>idx.get("Источник",7) else "",
-        r[idx.get("Сумма",8)] if len(r)>idx.get("Сумма",8) else "",
-        r[idx.get("Описание",9)] if len(r)>idx.get("Описание",9) else "",
-    ]
-
-def _map_master_to_service_row(idx, r):
-    return [
-        r[idx.get("ID",1)] if len(r)>idx.get("ID",1) else "",
-        r[idx.get("CarID",2)] if len(r)>idx.get("CarID",2) else "",
-        r[idx.get("Название",3)] if len(r)>idx.get("Название",3) else "",
-        r[idx.get("VIN",4)] if len(r)>idx.get("VIN",4) else "",
-        r[idx.get("Дата",6)] if len(r)>idx.get("Дата",6) else "",
-        r[idx.get("Сумма",8)] if len(r)>idx.get("Сумма",8) else "",
-        r[idx.get("Описание",9)] if len(r)>idx.get("Описание",9) else "",
-    ]
-
-# Monkey patches
-try:
-    import gspread
-    from gspread.models import Worksheet as _WS
-
-    # keep originals (might already be wrapped for retries/normalization)
-    _orig_get_all_values_ws = _WS.get_all_values
-    _orig_append_row_ws = _WS.append_row
-    _orig_delete_rows_ws = _WS.delete_rows
-
-    def _unified_get_all_values(self, *args, **kwargs):
-        title = getattr(self, "title", "")
-        if title in (FREEZE_SHEET, SERVICES_SHEET):
-            try:
-                sh = self.spreadsheet
-                master = sh.worksheet(WORKSHOP_SHEET)
-                rows = _orig_get_all_values_ws(master, *args, **kwargs)
-                if not rows:
-                    rows = [MASTER_HEADERS]
-                header = rows[0]
-                idx = {h: i for i, h in enumerate(header)}
-                out = []
-                if title == FREEZE_SHEET:
-                    out.append(["ID","CarID","Название","VIN","Дата","Источник","Сумма","Описание"])
-                    for r in rows[1:]:
-                        if r and (r[0] or "").strip().upper() == UNIFIED_TYPE_FREEZE:
-                            out.append(_map_master_to_freeze_row(idx, r))
-                else:
-                    out.append(["ID","CarID","Название","VIN","Дата","Сумма","Описание"])
-                    for r in rows[1:]:
-                        if r and (r[0] or "").strip().upper() == UNIFIED_TYPE_SERVICE:
-                            out.append(_map_master_to_service_row(idx, r))
-                return out
-            except Exception as e:
-                logger.error(f"unified get_all_values error: {e}")
-        return _orig_get_all_values_ws(self, *args, **kwargs)
-
-    def _unified_append_row(self, values, *args, **kwargs):
-        title = getattr(self, "title", "")
-        if title in (FREEZE_SHEET, SERVICES_SHEET):
-            try:
-                sh = self.spreadsheet
-                master = sh.worksheet(WORKSHOP_SHEET)
-                if title == FREEZE_SHEET:
-                    v = (values + [""]*8)[:8]
-                    row = [UNIFIED_TYPE_FREEZE, v[0], v[1], v[2], v[3], "", v[4], _norm_source(v[5]) if '_norm_source' in globals() else v[5], v[6], v[7], ""]
-                else:
-                    v = (values + [""]*7)[:7]
-                    row = [UNIFIED_TYPE_SERVICE, v[0], v[1], v[2], v[3], "", v[4], "", v[5], v[6], ""]
-                return _orig_append_row_ws(master, row, *args, **kwargs)
-            except Exception as e:
-                logger.error(f"unified append_row error: {e}")
-                # fallthrough to original (legacy separate sheet), but это крайний случай
-        return _orig_append_row_ws(self, values, *args, **kwargs)
-
-    def _unified_delete_rows(self, index, *args, **kwargs):
-        title = getattr(self, "title", "")
-        if title in (FREEZE_SHEET, SERVICES_SHEET):
-            try:
-                sh = self.spreadsheet
-                master = sh.worksheet(WORKSHOP_SHEET)
-                # build mapping logical->master
-                all_rows = _orig_get_all_values_ws(master)
-                if not all_rows:
-                    return
-                type_tag = UNIFIED_TYPE_FREEZE if title == FREEZE_SHEET else UNIFIED_TYPE_SERVICE
-                hits = [i for i, r in enumerate(all_rows[1:], start=2) if r and (r[0] or "").strip().upper() == type_tag]
-                if 1 <= index-1 < len(hits):
-                    master_i = hits[index-1]
-                    return _orig_delete_rows_ws(master, master_i, *args, **kwargs)
-            except Exception as e:
-                logger.error(f"unified delete_rows error: {e}")
-        return _orig_delete_rows_ws(self, index, *args, **kwargs)
-
-    _WS.get_all_values = _unified_get_all_values
-    _WS.append_row = _unified_append_row
-    _WS.delete_rows = _unified_delete_rows
-
-except Exception as _e:
-    logging.warning(f"Unified mode patch failed: {_e}")
-# === END UNIFIED ===
-
-
-
-# === UNIFIED REDIRECT FOR Spreadsheet.worksheet(...) ===
-# If someone calls sh.worksheet("Услуги") or sh.worksheet("Заморозка") when those sheets
-# no longer exist, we return a proxy view that points to the master sheet "Мастерская".
-
-try:
-    import gspread
-    from gspread.models import Spreadsheet as _SS, Worksheet as _WS
-
-    class _UnifiedSheetView:
-        def __init__(self, spreadsheet, master_ws, logical_name, logical_type):
-            self.spreadsheet = spreadsheet
-            self._master = master_ws
-            self.title = logical_name
-            self._type = logical_type  # "FREEZE" or "SERVICE"
-
-        # READS
-        def get_all_values(self, *args, **kwargs):
-            rows = _WS.get_all_values(self._master, *args, **kwargs)
-            if not rows:
-                rows = [MASTER_HEADERS]
-            header = rows[0]
-            idx = {h: i for i, h in enumerate(header)}
-            out = []
-            if self._type == UNIFIED_TYPE_FREEZE:
-                out.append(["ID","CarID","Название","VIN","Дата","Источник","Сумма","Описание"])
-                for r in rows[1:]:
-                    if r and (r[0] or "").strip().upper() == UNIFIED_TYPE_FREEZE:
-                        out.append(_map_master_to_freeze_row(idx, r))
-            else:
-                out.append(["ID","CarID","Название","VIN","Дата","Сумма","Описание"])
-                for r in rows[1:]:
-                    if r and (r[0] or "").strip().upper() == UNIFIED_TYPE_SERVICE:
-                        out.append(_map_master_to_service_row(idx, r))
-            return out
-
-        def row_values(self, n: int):
-            vals = self.get_all_values()
-            return vals[0] if (n == 1 and vals) else []
-
-        # WRITES
-        def append_row(self, values, *args, **kwargs):
-            if self._type == UNIFIED_TYPE_FREEZE:
-                v = (values + [""]*8)[:8]
-                row = [UNIFIED_TYPE_FREEZE, v[0], v[1], v[2], v[3], "", v[4], _norm_source(v[5]) if '_norm_source' in globals() else v[5], v[6], v[7], ""]
-            else:
-                v = (values + [""]*7)[:7]
-                row = [UNIFIED_TYPE_SERVICE, v[0], v[1], v[2], v[3], "", v[4], "", v[5], v[6], ""]
-            return _WS.append_row(self._master, row, *args, **kwargs)
-
-        def delete_rows(self, index, *args, **kwargs):
-            all_rows = _WS.get_all_values(self._master)
-            if not all_rows: return
-            type_tag = UNIFIED_TYPE_FREEZE if self._type == UNIFIED_TYPE_FREEZE else UNIFIED_TYPE_SERVICE
-            hits = [i for i, r in enumerate(all_rows[1:], start=2) if r and (r[0] or "").strip().upper() == type_tag]
-            if 1 <= index-1 < len(hits):
-                master_i = hits[index-1]
-                return _WS.delete_rows(self._master, master_i, *args, **kwargs)
-            # fallback
-            return _WS.delete_rows(self._master, index, *args, **kwargs)
-
-        # NO-OPs to stay compatible with ensure_ws_with_headers migrations
-        def update(self, *args, **kwargs):  # don't touch master header from views
-            return None
-        def update_cell(self, *args, **kwargs):
-            return None
-        def insert_cols(self, *args, **kwargs):
-            return None
-
-    _orig_ss_worksheet = _SS.worksheet
-
-    def _ss_worksheet_unified(self, title):
-        if title in (FREEZE_SHEET, SERVICES_SHEET):
-            try:
-                master = _orig_ss_worksheet(self, WORKSHOP_SHEET)
-            except Exception:
-                # Create master if needed via helper
-                client = get_gspread_client()
-                master = _ensure_master_ws(client)
-            logical_type = UNIFIED_TYPE_FREEZE if title == FREEZE_SHEET else UNIFIED_TYPE_SERVICE
-            return _UnifiedSheetView(self, master, title, logical_type)
-        return _orig_ss_worksheet(self, title)
-
-    _SS.worksheet = _ss_worksheet_unified
-
-except Exception as e:
-    logging.warning(f"Unified redirect patch failed: {e}")
-# === END REDIRECT ===
