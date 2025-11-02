@@ -53,6 +53,46 @@ def _ensure_freeze_ws(client):
 def _ensure_services_ws(client):
     return ensure_ws_with_headers(client, SERVICES_SHEET, SERVICES_HEADERS)
 
+def get_services_recent_for_car(client, car_id: str, limit: int = 5):
+    """
+    Возвращает последние N услуг по машине (по порядку добавления).
+    Формат элемента: (дата_str, Decimal сумма, описание_str)
+    """
+    ws = _ensure_services_ws(client)
+    rows = ws.get_all_values()[1:]
+    items = []
+    for r in rows:
+        if not r:
+            continue
+        if (r[1] or "").strip() != car_id:
+            continue
+        date_str = (r[4] if len(r) > 4 else "") or ""
+        amount   = _to_amount(r[5] if len(r) > 5 else "0")
+        desc     = (r[6] if len(r) > 6 else "") or "-"
+        items.append((date_str, amount, desc))
+    # последние по добавлению (мы дописываем в конец) → просто берём с конца
+    items = items[-limit:][::-1]
+    return items
+
+def get_services_for_car(client, car_id: str):
+    """
+    Все услуги по машине (без даты).
+    Возвращает список элементов (Decimal amount, str desc) в порядке добавления.
+    """
+    ws = _ensure_services_ws(client)
+    rows = ws.get_all_values()[1:]
+    items = []
+    for r in rows:
+        if not r:
+            continue
+        if (r[1] or "").strip() != car_id:
+            continue
+        amount = _to_amount(r[5] if len(r) > 5 else "0")
+        desc   = (r[6] if len(r) > 6 else "") or "-"
+        items.append((amount, desc))
+    return items
+
+
 def get_services_total_for_car(client, car_id: str) -> Decimal:
     ws = _ensure_services_ws(client)
     rows = ws.get_all_values()[1:]
@@ -741,6 +781,82 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await menu_command(update, context)
         return
 
+    elif data.startswith("workshop_services:"):
+        # формат: workshop_services:<car_id>:<page>
+        parts = data.split(":", 2)
+        if len(parts) == 2:
+            car_id = parts[1]
+            page = 0
+        else:
+            car_id = parts[1]
+            try:
+                page = int(parts[2].replace("page", ""))
+            except Exception:
+                page = 0
+
+        try:
+            client = get_gspread_client()
+            # подтянем имя авто для заголовка
+            ws = ensure_ws_with_headers(client, WORKSHOP_SHEET, WORKSHOP_HEADERS)
+            rows = ws.get_all_values()
+            header = rows[0] if rows else []
+            idx = {h.strip(): i for i, h in enumerate(header)}
+
+            name = "(без названия)"
+            for r in rows[1:]:
+                if r and (r[0] or "").strip() == car_id:
+                    name = (r[idx.get("Название", 1)] if len(r) > 1 else "") or "(без названия)"
+                    break
+
+            services = get_services_for_car(client, car_id)
+            total = len(services)
+            page_size = 20
+            if total == 0:
+                kb = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅️ Назад к машине", callback_data=f"workshop_view:{car_id}")],
+                    [InlineKeyboardButton("⬅️ К списку", callback_data="workshop")],
+                ])
+                await query.edit_message_text(
+                    f"🧰 *{name}*\n\nУслуги не найдены.",
+                    reply_markup=kb, parse_mode="Markdown"
+                )
+                return
+
+            max_page = (total - 1) // page_size
+            page = max(0, min(page, max_page))
+            start = page * page_size
+            end = start + page_size
+            chunk = services[start:end]
+
+            lines = []
+            for amt, desc in chunk:
+                tail = f" — {desc}" if desc and desc != "-" else ""
+                lines.append(f"• {_fmt_amount(amt)}{tail}")
+
+            pager_line = f"Страница {page + 1}/{max_page + 1} • всего услуг: {total}"
+            text = (
+                f"🧰 *{name}*\n"
+                f"📜 Все услуги\n\n" +
+                "\n".join(lines) + "\n\n" + pager_line
+            )
+
+            nav = []
+            if page > 0:
+                nav.append(InlineKeyboardButton("⬅️ Назад", callback_data=f"workshop_services:{car_id}:page{page-1}"))
+            if page < max_page:
+                nav.append(InlineKeyboardButton("Вперёд ➡️", callback_data=f"workshop_services:{car_id}:page{page+1}"))
+
+            kb = InlineKeyboardMarkup([
+                nav] if nav else [[InlineKeyboardButton("• 1/1 •", callback_data=f"workshop_services:{car_id}:page0")],
+                [InlineKeyboardButton("⬅️ К машине", callback_data=f"workshop_view:{car_id}")],
+                [InlineKeyboardButton("⬅️ К списку", callback_data="workshop")],
+            ])
+            await query.edit_message_text(text, reply_markup=kb, parse_mode="Markdown")
+        except Exception as e:
+            logger.error(f"workshop_services error: {e}")
+            await query.message.reply_text("⚠️ Не удалось показать услуги.")
+        return    
+
     elif data == "workshop":
         try:
             client = get_gspread_client()
@@ -992,25 +1108,45 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     row = r
                     break
             if not row:
-                await query.edit_message_text("🚫 Машина не найдена.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="workshop")]]))
+                await query.edit_message_text(
+                    "🚫 Машина не найдена.",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="workshop")]])
+                )
                 return
 
             name = (row[idx.get("Название", 1)] if len(row) > 1 else "") or "(без названия)"
             vin  = (row[idx.get("VIN", 2)] if len(row) > 2 else "") or "—"
 
+            # суммы
             frozen = get_frozen_for_car(client, car_id)
             services_total = get_services_total_for_car(client, car_id)
+            all_services = get_services_for_car(client, car_id)
+            services_count = len(all_services)
+
+            # последние услуги (до 5)
+            recent = get_services_recent_for_car(client, car_id, limit=5)
+            if recent:
+                lines = []
+                for dt_str, amt, desc in recent:
+                    desc_q = f" — {desc}" if desc and desc != "-" else ""
+                    lines.append(f"• {dt_str}: {_fmt_amount(amt)}{desc_q}")
+                services_list_block = "Последние услуги:\n" + "\n".join(lines) + "\n"
+            else:
+                services_list_block = ""
 
             text = (
                 f"🧰 *{name}*\n"
                 f"🔑 VIN: `{vin}`\n"
                 f"🧊 Запчастей (заморожено): {_fmt_amount(frozen)}\n"
-                f"🛠️ Услуг на сумму: {_fmt_amount(services_total)}\n\n"
+                f"🛠️ Услуг на сумму: {_fmt_amount(services_total)}\n"
+                f"{services_list_block}\n"
                 f"Что делаем?"
             )
+
             kb = InlineKeyboardMarkup([
                 [InlineKeyboardButton("🧾 Купить запчасти", callback_data=f"workshop_buy_parts:{car_id}")],
                 [InlineKeyboardButton("🛠️ Добавить услугу", callback_data=f"workshop_add_service:{car_id}")],
+                [InlineKeyboardButton(f"📜 Все услуги ({services_count})", callback_data=f"workshop_services:{car_id}:page0")],
                 [InlineKeyboardButton("⬅️ Назад", callback_data="workshop")],
             ])
             await query.edit_message_text(text, reply_markup=kb, parse_mode="Markdown")
@@ -1018,6 +1154,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"workshop_view error: {e}")
             await query.message.reply_text("⚠️ Не удалось открыть карточку машины.")
         return
+
 
     elif data.startswith("workshop_buy_parts:"):
         car_id = data.split(":", 1)[1]
