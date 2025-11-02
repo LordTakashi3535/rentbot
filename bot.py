@@ -19,6 +19,9 @@ def _parse_dt_safe(s: str):
             pass
     return None
 
+WORKSHOP_SHEET = "Мастерская"
+WORKSHOP_HEADERS = ["ID", "Название", "VIN", "Создано"]    
+
 # === Dynamic Categories & Records ===
 from typing import Optional, List, Dict, Tuple, Union
 
