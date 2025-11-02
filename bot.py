@@ -131,7 +131,7 @@ def add_category(kind: str, name: str) -> str:
     rows = ws.get_all_values()
     if not rows:
         ws.append_row(["ID","Тип","Название","Активна","Порядок"])
-    cat_id = "cat_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+    cat_id = "cat_" + datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     ws.append_row([cat_id, kind.strip(), name.strip(), "1", "0"])
     return cat_id
 
@@ -159,18 +159,20 @@ def append_income(category_id: str, category_name: str, card_amount: float, cash
     ws = client.open_by_key(SPREADSHEET_ID).worksheet(INCOME_SHEET)
     ensure_sheet_headers(ws, INOUT_HEADERS)
     ws.append_row([
-        datetime.now().strftime("%d.%m.%Y %H:%M"),
+        datetime.datetime.now().strftime("%d.%m.%Y %H:%M"),
         category_id, category_name, _fmt_amount(card_amount), _fmt_amount(cash_amount), desc or "-",
     ])
+
 
 def append_expense(category_id: str, category_name: str, card_amount: float, cash_amount: float, desc: str):
     client = get_gspread_client()
     ws = client.open_by_key(SPREADSHEET_ID).worksheet(EXPENSE_SHEET)
     ensure_sheet_headers(ws, INOUT_HEADERS)
     ws.append_row([
-        datetime.now().strftime("%d.%m.%Y %H:%M"),
+        datetime.datetime.now().strftime("%d.%m.%Y %H:%M"),
         category_id, category_name, _fmt_amount(card_amount), _fmt_amount(cash_amount), desc or "-",
     ])
+
 def _parse_date_flex(s: str) -> Optional[datetime.date]:
     """Парсит 'ДД.ММ.ГГГГ' или 'ДД.ММ.ГГГГ ЧЧ:ММ'. Возвращает date или None."""
     if not s:
