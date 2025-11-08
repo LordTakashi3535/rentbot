@@ -1538,7 +1538,8 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
             await query.message.reply_text("❌ Не удалось завершить ремонт.")
         return
-elif data.startswith("ws_buy_src:"):
+        
+    elif data.startswith("ws_buy_src:"):
         # формат: ws_buy_src:card:<car_id>  или ws_buy_src:cash:<car_id>
         _, src, car_id = data.split(":", 2)
         source = "Карта" if src == "card" else "Наличные"
