@@ -15,18 +15,22 @@ DATE_FMT = "%d.%m.%Y %H:%M"  # как пишем в листы
 WORKSHOP_SHEET = "Мастерская"
 WORKSHOP_HEADERS = ["ID", "Название", "VIN", "Создано"]
 
-# ---- мастерская: единый лист для услуг и заморозки ----
+# уже есть:
+# WORKSHOP_SHEET = "Мастерская"
+# WORKSHOP_HEADERS = ["ID", "Название", "VIN", "Создано"]
+
+# единый лист
 WORKSHOP_UNIFIED_SHEET = "Мастерская_Данные"
 WORKSHOP_UNIFIED_HEADERS = [
-    "Тип",
-    "ID",
-    "CarID",
-    "Название",
-    "VIN",
-    "Дата",
-    "Источник",
-    "Сумма",
-    "Описание",
+    "Тип",       # 0
+    "ID",        # 1
+    "CarID",     # 2
+    "Название",  # 3
+    "VIN",       # 4
+    "Дата",      # 5
+    "Источник",  # 6
+    "Сумма",     # 7
+    "Описание",  # 8
 ]
 
 def _ensure_workshop_unified_ws(client):
@@ -120,25 +124,6 @@ def get_services_total_for_car(client, car_id: str) -> Decimal:
         total += _to_amount(r[7])
     return total
 
-# ---------- ЗАМОРОЗКА (запчасти) ----------
-
-def get_frozen_for_car(client, car_id: str) -> Decimal:
-    """
-    Общая сумма заморозки по машине.
-    """
-    ws = _ensure_workshop_unified_ws(client)
-    rows = ws.get_all_values()[1:]
-    total = Decimal("0")
-    for r in rows:
-        if not r or len(r) < 8:
-            continue
-        if (r[0] or "").strip() != "Заморозка":
-            continue
-        if (r[2] or "").strip() != car_id:
-            continue
-        total += _to_amount(r[7])
-    return total
-
 def get_frozen_breakdown_for_car(client, car_id: str):
     """
     Разбивка заморозки по источникам (карта/нал).
@@ -173,9 +158,60 @@ def get_frozen_breakdown_for_car(client, car_id: str):
         "count": cnt,
     }
 
+from decimal import Decimal
+
+def get_frozen_for_car(client, car_id: str) -> Decimal:
+    ws = _ensure_workshop_unified_ws(client)
+    rows = ws.get_all_values()[1:]
+    total = Decimal("0")
+    for r in rows:
+        if not r or len(r) < 8:
+            continue
+        if (r[0] or "").strip() != "Заморозка":
+            continue
+        if (r[2] or "").strip() != car_id:
+            continue
+        total += _to_amount(r[7])
+    return total
+
+
+def get_frozen_by_car(client):
+    """
+    items = [(car_id, name, sum), ...], total = сумма по всем
+    читает из Мастерская_Данные с твоей шапкой
+    """
+    ws = _ensure_workshop_unified_ws(client)
+    rows = ws.get_all_values()[1:]
+    by = {}
+    total = Decimal("0")
+    for r in rows:
+        if not r or len(r) < 8:
+            continue
+        if (r[0] or "").strip() != "Заморозка":
+            continue
+
+        car_id = (r[2] or "").strip()
+        name   = (r[3] or "").strip() or "(без названия)"
+        amt    = _to_amount(r[7])
+
+        total += amt
+
+        if not car_id:
+            car_id = "__unknown__"
+            name = "(без машины)"
+
+        if car_id not in by:
+            by[car_id] = [name, Decimal("0")]
+        by[car_id][1] += amt
+
+    items = [(cid, nm, sm) for cid, (nm, sm) in by.items()]
+    items.sort(key=lambda x: x[2], reverse=True)
+    return items, total
+
+
 def get_frozen_totals(client):
     """
-    Общие замороженные суммы по всем машинам (для отчётов).
+    Разбивка заморозки по источникам (Карта/Наличные) из Мастерская_Данные.
     """
     ws = _ensure_workshop_unified_ws(client)
     rows = ws.get_all_values()[1:]
@@ -187,8 +223,7 @@ def get_frozen_totals(client):
         if (r[0] or "").strip() != "Заморозка":
             continue
         amt = _to_amount(r[7])
-        src_raw = (r[6] if len(r) > 6 else "").strip()
-        src = _norm_source(src_raw)
+        src = _norm_source((r[6] or "").strip())
         if src == "Карта":
             card += amt
         elif src == "Наличные":
@@ -198,37 +233,6 @@ def get_frozen_totals(client):
         "cash": cash,
         "total": card + cash,
     }
-
-    def get_frozen_by_car(client):
-        ws = client.open_by_key(SPREADSHEET_ID).worksheet("Мастерская_Данные")
-        rows = ws.get_all_values()[1:]
-
-        from decimal import Decimal
-        by = {}
-        for r in rows:
-            # жёстко фильтруем
-            if not r or len(r) < 8:
-                continue
-            if (r[0] or "").strip() != "Заморозка":
-                continue
-
-            car_id = (r[2] or "").strip()
-            if not car_id:
-                continue
-
-            name = (r[3] or "").strip() or "(без названия)"  # "Название"
-            amt = _to_amount(r[7])
-
-            if car_id not in by:
-                by[car_id] = [name, Decimal("0")]
-            by[car_id][1] += amt
-
-        items = [(cid, name, summ) for cid, (name, summ) in by.items()]
-        # отсортируем по сумме
-        items.sort(key=lambda t: t[2], reverse=True)
-
-        total = sum((s for _, _, s in items), Decimal("0"))
-        return items, total
 
 def _parse_dt_safe(s: str):
     """Пытаемся распарсить 'ДД.ММ.ГГГГ ЧЧ:ММ' или 'ДД.ММ.ГГГГ'. Возвращаем datetime или None."""
