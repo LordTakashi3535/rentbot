@@ -2048,11 +2048,12 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     elif data == "balance":
+        from decimal import Decimal  # 👈 чтобы ниже Decimal был доступен
         try:
             client = get_gspread_client()
 
             # основная инфа
-            summary = compute_summary(client)  # ты её уже показал выше
+            summary = compute_summary(client)
 
             # заморозка по машинам
             try:
@@ -2061,10 +2062,11 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logger.error(f"get_frozen_by_car error: {e}")
                 frozen_items, frozen_total = [], Decimal("0")
 
-            # отдельная сводка по заморозке (карта/нал) — если сделаешь
+            # отдельная сводка по заморозке (карта/нал) — если есть
             try:
-                frozen_totals_all = get_frozen_totals(client)  # если есть такая
-            except Exception:
+                frozen_totals_all = get_frozen_totals(client)
+            except Exception as e:
+                logger.error(f"get_frozen_totals error: {e}")
                 frozen_totals_all = None
 
             lines = []
@@ -2083,7 +2085,6 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 for car_id, name, summ in frozen_items:
                     lines.append(f"• {name} — {_fmt_amount(summ)}")
 
-            # если есть разбивка по источникам — покажем
             if frozen_totals_all:
                 lines.append("")
                 lines.append("💳 Заморожено (карта): " + _fmt_amount(frozen_totals_all.get("card", Decimal("0"))))
