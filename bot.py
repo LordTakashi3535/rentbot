@@ -2052,21 +2052,24 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             client = get_gspread_client()
 
-            # 1. Основной баланс из Доход/Расход
+            # 1. Основные цифры из Доход/Расход
             summary = compute_summary(client)
+            initial       = summary["Начальная"]
+            income_total  = summary.get("Доход", Decimal("0"))
+            expense_total = summary.get("Расход", Decimal("0"))
+            earned        = summary.get("Заработано", income_total - expense_total)
             total_balance = summary["Баланс"]
             card_balance  = summary["Карта"]
             cash_balance  = summary["Наличные"]
-            initial       = summary["Начальная"]
 
-            # 2. Заморозка по машинам (наш новый общий лист)
+            # 2. Заморозка по машинам (может ничего не дать)
             try:
                 frozen_items, frozen_total = get_frozen_by_car(client)
             except Exception as e:
                 logger.error(f"get_frozen_by_car error: {e}")
                 frozen_items, frozen_total = [], Decimal("0")
 
-            # 3. Заморозка по источникам (если функция есть)
+            # 3. Заморозка по источникам (обычно даёт цифру)
             frozen_card = Decimal("0")
             frozen_cash = Decimal("0")
             try:
@@ -2076,33 +2079,46 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logger.error(f"get_frozen_totals error: {e}")
 
-            # 4. Посчитаем "доступно" (как раньше — баланс минус заморожено)
+            # 4. Если по машинам 0, а по источникам есть — берём источники
+            frozen_by_sources = frozen_card + frozen_cash
+            if frozen_total == 0 and frozen_by_sources > 0:
+                frozen_total = frozen_by_sources
+
+            # 5. Считаем "доступно" с учётом заморозки
             available_total = total_balance - frozen_total
             available_card  = card_balance - frozen_card
             available_cash  = cash_balance - frozen_cash
 
             lines = []
             lines.append("📊 *Баланс*")
+            # мини-отчёт сверху
+            lines.append(f"🪙 Начальная: {_fmt_amount(initial)}")
+            lines.append(f"📥 Доход: {_fmt_amount(income_total)}")
+            lines.append(f"📤 Расход: {_fmt_amount(expense_total)}")
+            lines.append(f"💡 Заработано: *{_fmt_amount(earned)}*")
             lines.append("")
+            # общий баланс
             lines.append(f"💼 Всего: *{_fmt_amount(total_balance)}*")
-            lines.append(f"✅ Доступно: *{_fmt_amount(available_total)}*")  # с учётом заморозки
+            lines.append(f"✅ Доступно (с учётом заморозки): *{_fmt_amount(available_total)}*")
             lines.append("")
+            # карта / нал с учётом заморозки
             lines.append(f"💳 Карта: {_fmt_amount(card_balance)}")
             lines.append(f"   ↳ свободно: {_fmt_amount(available_card)}")
             lines.append(f"💵 Наличные: {_fmt_amount(cash_balance)}")
             lines.append(f"   ↳ свободно: {_fmt_amount(available_cash)}")
-            lines.append(f"🪙 Начальная: {_fmt_amount(initial)}")
             lines.append("")
+            # общая заморозка
             lines.append(f"🧊 Заморожено всего: *{_fmt_amount(frozen_total)}*")
             lines.append(f"   💳 по карте: {_fmt_amount(frozen_card)}")
             lines.append(f"   💵 по налу:  {_fmt_amount(frozen_cash)}")
-
-            # 5. Расшифровка по машинам
+            lines.append("")
+            # список по машинам — показываем ВСЕГДА
+            lines.append("🔧 Заморожено по машинам:")
             if frozen_items:
-                lines.append("")
-                lines.append("🔧 Заморожено по машинам:")
                 for car_id, name, summ in frozen_items:
                     lines.append(f"• {name} — {_fmt_amount(summ)}")
+            else:
+                lines.append("• нет записей по машинам")
 
             kb = InlineKeyboardMarkup([
                 [InlineKeyboardButton("⬅️ Назад", callback_data="menu")],
