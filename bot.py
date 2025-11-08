@@ -1500,15 +1500,14 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         car_id = data.split(":", 1)[1]
         try:
             from decimal import Decimal
+            import datetime
             client = get_gspread_client()
 
-            # что у нас уже лежит в user_data после предыдущих шагов
             car_name       = context.user_data.get("car_name", "(без названия)")
-            dest_frozen    = context.user_data.get("dest_frozen")    # куда вернуть заморозку (Карта/Наличные)
-            dest_income    = context.user_data.get("dest_income")    # куда доход по услугам
+            dest_frozen    = context.user_data.get("dest_frozen")
+            dest_income    = context.user_data.get("dest_income")
             services_total = context.user_data.get("services_total", Decimal("0"))
 
-            # если кошельки не выбраны - не продолжаем
             if dest_frozen not in ("Карта", "Наличные") or dest_income not in ("Карта", "Наличные"):
                 kb = InlineKeyboardMarkup([
                     [InlineKeyboardButton("⬅️ Назад", callback_data=f"workshop_finish:{car_id}")]
@@ -1519,8 +1518,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 return
 
-            # ===== 1. Собираем заморозку по машине из единого листа =====
-            # ПРАВЬ название листа тут ↓↓↓ если у тебя другое
+            # 1. читаем Мастерская_Данные и собираем заморозку
             ws_data = client.open_by_key(SPREADSHEET_ID).worksheet("Мастерская_Данные")
             rows = ws_data.get_all_values()
 
@@ -1536,11 +1534,10 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if typ != "Заморозка" or cid != car_id:
                     continue
 
-                # нормализуем источник
-                raw_src = r[5] if len(r) > 5 else ""
+                # ❗❗ вот тут была ошибка: источник в колонке 6, не 5
+                raw_src = r[6] if len(r) > 6 else ""
                 src = _ws_norm_source(raw_src)
 
-                # нормализуем сумму
                 raw_amt = r[7] if len(r) > 7 else ""
                 raw_amt = (raw_amt or "").replace(" ", "").replace("\u00a0", "")
                 amt = Decimal("0")
@@ -1552,57 +1549,52 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 elif src == "Наличные":
                     frozen_from_cash += amt
                 else:
-                    # если непонятно что за источник — пусть будет как у тебя чаще всего, можно оставить в наличке
+                    # если не узнали — пусть будет как чаще всего (нал)
                     frozen_from_cash += amt
 
                 rows_to_delete.append(i)
 
-            # удаляем заморозки по машине (чтобы в балансе они исчезли)
+            # удаляем строки заморозки по машине
             for i in sorted(rows_to_delete, reverse=True):
                 ws_data.delete_rows(i)
 
-            # ===== 2. Если источник и возврат не совпали — делаем ПЕРЕВОД =====
-            # перевод пишем в Расход и Доход с категорией "Перевод", чтобы отчёты могли это отфильтровать
+            # 2. подготовка листов и вспомогалки
             expense_ws = client.open_by_key(SPREADSHEET_ID).worksheet("Расход")
             income_ws  = client.open_by_key(SPREADSHEET_ID).worksheet("Доход")
             now = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
 
             def append_transfer(amount: Decimal, direction: str):
-                # direction: "card_to_cash" или "cash_to_card"
                 if amount <= 0:
                     return
                 q = str(amount.quantize(Decimal("0.01")))
-                # Попробуем найти категорию "Перевод"
                 try:
                     cat_id, cat_name = ensure_category_by_name("Доход", "Перевод")
                 except NameError:
                     cat_id, cat_name = "", "Перевод"
 
-                # расход
                 exp = [now, cat_id, cat_name, "", "", f"Перевод заморозки: {car_name}"]
-                # доход
                 inc = [now, cat_id, cat_name, "", "", f"Перевод заморозки: {car_name}"]
 
                 if direction == "card_to_cash":
-                    # списали с карты, положили в нал
-                    exp[3] = q
-                    inc[4] = q
-                else:  # cash_to_card
-                    exp[4] = q
-                    inc[3] = q
+                    exp[3] = q   # списали с карты
+                    inc[4] = q   # положили в нал
+                else:  # "cash_to_card"
+                    exp[4] = q   # списали с нал
+                    inc[3] = q   # положили на карту
 
                 expense_ws.append_row(exp, value_input_option="USER_ENTERED", table_range="A:F")
                 income_ws.append_row(inc,  value_input_option="USER_ENTERED", table_range="A:F")
 
-            # если вернуть надо на КАРТУ, а заморозка была НАЛИЧКАМИ -> делаем cash_to_card
+            # 3. делаем перевод, если нужно
+            # вернуть на карту, а заморозка была наличкой
             if dest_frozen == "Карта" and frozen_from_cash > 0:
                 append_transfer(frozen_from_cash, "cash_to_card")
 
-            # если вернуть надо НАЛИЧНЫМИ, а заморозка была с КАРТЫ -> делаем card_to_cash
+            # вернуть в наличку, а заморозка была с карты
             if dest_frozen == "Наличные" and frozen_from_card > 0:
                 append_transfer(frozen_from_card, "card_to_cash")
 
-            # ===== 3. Пишем РЕАЛЬНЫЙ доход по услугам =====
+            # 4. доход по услугам
             if services_total > 0:
                 try:
                     cat_id_inc, cat_name_inc = ensure_category_by_name("Доход", "Ремонт")
@@ -1617,7 +1609,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     row_inc[4] = q
                 income_ws.append_row(row_inc, value_input_option="USER_ENTERED")
 
-            # ===== 4. Удаляем машину из листа "Мастерская" =====
+            # 5. убираем машину из Мастерская
             try:
                 ws_cars = client.open_by_key(SPREADSHEET_ID).worksheet(WORKSHOP_SHEET)
                 car_rows = ws_cars.get_all_values()
@@ -1628,15 +1620,12 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logger.warning(f"Не удалось удалить машину из Мастерская: {e}")
 
-            # ===== 5. Сообщение и финал =====
-            txt = [
-                f"✅ Ремонт завершён: {car_name}",
-            ]
+            # 6. сообщение
+            txt = [f"✅ Ремонт завершён: {car_name}"]
             if frozen_from_card or frozen_from_cash:
                 txt.append(f"🧊 Заморозка возвращена → {dest_frozen}")
             if services_total > 0:
                 txt.append(f"🛠️ Доход по услугам: {services_total} → {dest_income}")
-
             try:
                 await context.bot.send_message(chat_id=REMINDER_CHAT_ID, text="\n".join(txt))
             except Exception:
@@ -1655,7 +1644,6 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
             await query.message.reply_text("❌ Не удалось завершить ремонт.")
         return
-
 
     elif data.startswith("ws_buy_src:"):
         # формат: ws_buy_src:card:<car_id>
