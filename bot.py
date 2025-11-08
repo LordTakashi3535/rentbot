@@ -2048,47 +2048,61 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     elif data == "balance":
-        from decimal import Decimal  # 👈 чтобы ниже Decimal был доступен
+        from decimal import Decimal
         try:
             client = get_gspread_client()
 
-            # основная инфа
+            # 1. Основной баланс из Доход/Расход
             summary = compute_summary(client)
+            total_balance = summary["Баланс"]
+            card_balance  = summary["Карта"]
+            cash_balance  = summary["Наличные"]
+            initial       = summary["Начальная"]
 
-            # заморозка по машинам
+            # 2. Заморозка по машинам (наш новый общий лист)
             try:
                 frozen_items, frozen_total = get_frozen_by_car(client)
             except Exception as e:
                 logger.error(f"get_frozen_by_car error: {e}")
                 frozen_items, frozen_total = [], Decimal("0")
 
-            # отдельная сводка по заморозке (карта/нал) — если есть
+            # 3. Заморозка по источникам (если функция есть)
+            frozen_card = Decimal("0")
+            frozen_cash = Decimal("0")
             try:
-                frozen_totals_all = get_frozen_totals(client)
+                ft = get_frozen_totals(client)
+                frozen_card = ft.get("card", Decimal("0"))
+                frozen_cash = ft.get("cash", Decimal("0"))
             except Exception as e:
                 logger.error(f"get_frozen_totals error: {e}")
-                frozen_totals_all = None
+
+            # 4. Посчитаем "доступно" (как раньше — баланс минус заморожено)
+            available_total = total_balance - frozen_total
+            available_card  = card_balance - frozen_card
+            available_cash  = cash_balance - frozen_cash
 
             lines = []
             lines.append("📊 *Баланс*")
             lines.append("")
-            lines.append(f"💼 Всего: *{_fmt_amount(summary['Баланс'])}*")
-            lines.append(f"💳 Карта: {_fmt_amount(summary['Карта'])}")
-            lines.append(f"💵 Наличные: {_fmt_amount(summary['Наличные'])}")
-            lines.append(f"🪙 Начальная: {_fmt_amount(summary['Начальная'])}")
+            lines.append(f"💼 Всего: *{_fmt_amount(total_balance)}*")
+            lines.append(f"✅ Доступно: *{_fmt_amount(available_total)}*")  # с учётом заморозки
             lines.append("")
-            lines.append(f"🧊 Заморожено: *{_fmt_amount(frozen_total)}*")
+            lines.append(f"💳 Карта: {_fmt_amount(card_balance)}")
+            lines.append(f"   ↳ свободно: {_fmt_amount(available_card)}")
+            lines.append(f"💵 Наличные: {_fmt_amount(cash_balance)}")
+            lines.append(f"   ↳ свободно: {_fmt_amount(available_cash)}")
+            lines.append(f"🪙 Начальная: {_fmt_amount(initial)}")
+            lines.append("")
+            lines.append(f"🧊 Заморожено всего: *{_fmt_amount(frozen_total)}*")
+            lines.append(f"   💳 по карте: {_fmt_amount(frozen_card)}")
+            lines.append(f"   💵 по налу:  {_fmt_amount(frozen_cash)}")
 
+            # 5. Расшифровка по машинам
             if frozen_items:
                 lines.append("")
-                lines.append("🔧 По машинам:")
+                lines.append("🔧 Заморожено по машинам:")
                 for car_id, name, summ in frozen_items:
                     lines.append(f"• {name} — {_fmt_amount(summ)}")
-
-            if frozen_totals_all:
-                lines.append("")
-                lines.append("💳 Заморожено (карта): " + _fmt_amount(frozen_totals_all.get("card", Decimal("0"))))
-                lines.append("💵 Заморожено (нал): " + _fmt_amount(frozen_totals_all.get("cash", Decimal("0"))))
 
             kb = InlineKeyboardMarkup([
                 [InlineKeyboardButton("⬅️ Назад", callback_data="menu")],
@@ -2099,6 +2113,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="Markdown",
                 reply_markup=kb,
             )
+
         except Exception as e:
             logger.error(f"balance error: {e}")
             await query.message.reply_text("⚠️ Не удалось получить баланс.")
