@@ -11,6 +11,209 @@ from decimal import Decimal, ROUND_HALF_UP
 
 DATE_FMT = "%d.%m.%Y %H:%M"  # как пишем в листы
 
+WORKSHOP_SHEET = "Мастерская"  # ← можешь оставить свой лист с машинами (только машины)
+WORKSHOP_UNIFIED_SHEET = "Мастерская_Данные"
+WORKSHOP_UNIFIED_HEADERS = [
+    "Тип",        # "Машина" / "Услуга" / "Заморозка"
+    "ID",         # ID машины или записи
+    "CarID",      # для связки с машиной
+    "Название",
+    "VIN",
+    "Дата",
+    "Источник",
+    "Сумма",
+    "Описание",
+]
+
+def _ensure_workshop_unified_ws(client):
+    """Гарантирует наличие единого листа под услуги и заморозку."""
+    return ensure_ws_with_headers(client, WORKSHOP_UNIFIED_SHEET, WORKSHOP_UNIFIED_HEADERS)
+
+def add_workshop_record(
+    client,
+    kind: str,              # "Услуга" / "Заморозка" / "Машина"
+    car_id: str,
+    name: str = "",
+    vin: str = "",
+    date: str = "",
+    source: str = "",
+    amount: Decimal = Decimal("0"),
+    desc: str = "-",
+):
+    """Универсальная запись строки в единый лист мастерской."""
+    ws = _ensure_workshop_unified_ws(client)
+    if not date:
+        date = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
+    ws.append_row([
+        kind,
+        car_id,   # в ID можно класть car_id, если не ведёшь отдельные ID
+        car_id,
+        name or "",
+        vin or "",
+        date,
+        source or "",
+        str(amount.quantize(Decimal("0.01"))),
+        desc or "-",
+    ], value_input_option="USER_ENTERED")
+
+# ---------- УСЛУГИ ----------
+
+def get_services_for_car(client, car_id: str):
+    """
+    Вернёт список (amount, desc) для всех услуг по машине.
+    """
+    ws = _ensure_workshop_unified_ws(client)
+    rows = ws.get_all_values()[1:]
+    items = []
+    for r in rows:
+        if not r or len(r) < 8:
+            continue
+        if (r[0] or "").strip() != "Услуга":
+            continue
+        if (r[2] or "").strip() != car_id:
+            continue
+        amt = _to_amount(r[7])
+        desc = (r[8] if len(r) > 8 else "-") or "-"
+        items.append((amt, desc))
+    return items
+
+def get_services_recent_for_car(client, car_id: str, limit: int = 5):
+    """
+    Вернёт последние N услуг по машине.
+    Формат: (date_str, amount, desc)
+    """
+    ws = _ensure_workshop_unified_ws(client)
+    rows = ws.get_all_values()[1:]
+    items = []
+    for r in rows:
+        if not r or len(r) < 8:
+            continue
+        if (r[0] or "").strip() != "Услуга":
+            continue
+        if (r[2] or "").strip() != car_id:
+            continue
+        date_str = (r[5] if len(r) > 5 else "") or ""
+        amount   = _to_amount(r[7])
+        desc     = (r[8] if len(r) > 8 else "-") or "-"
+        items.append((date_str, amount, desc))
+    # берём последние по порядку добавления
+    return items[-limit:][::-1]
+
+def get_services_total_for_car(client, car_id: str) -> Decimal:
+    """
+    Сумма всех услуг по машине.
+    """
+    ws = _ensure_workshop_unified_ws(client)
+    rows = ws.get_all_values()[1:]
+    total = Decimal("0")
+    for r in rows:
+        if not r or len(r) < 8:
+            continue
+        if (r[0] or "").strip() != "Услуга":
+            continue
+        if (r[2] or "").strip() != car_id:
+            continue
+        total += _to_amount(r[7])
+    return total
+
+# ---------- ЗАМОРОЗКА (запчасти) ----------
+
+def get_frozen_for_car(client, car_id: str) -> Decimal:
+    """
+    Общая сумма заморозки по машине.
+    """
+    ws = _ensure_workshop_unified_ws(client)
+    rows = ws.get_all_values()[1:]
+    total = Decimal("0")
+    for r in rows:
+        if not r or len(r) < 8:
+            continue
+        if (r[0] or "").strip() != "Заморозка":
+            continue
+        if (r[2] or "").strip() != car_id:
+            continue
+        total += _to_amount(r[7])
+    return total
+
+def get_frozen_breakdown_for_car(client, car_id: str):
+    """
+    Разбивка заморозки по источникам (карта/нал).
+    Нужна при завершении ремонта, чтобы вернуть в нужный кошелёк.
+    """
+    ws = _ensure_workshop_unified_ws(client)
+    rows = ws.get_all_values()[1:]
+    card = Decimal("0")
+    cash = Decimal("0")
+    cnt  = 0
+    for r in rows:
+        if not r or len(r) < 8:
+            continue
+        if (r[0] or "").strip() != "Заморозка":
+            continue
+        if (r[2] or "").strip() != car_id:
+            continue
+
+        amt = _to_amount(r[7])
+        src_raw = (r[6] if len(r) > 6 else "").strip()
+        src = _norm_source(src_raw)
+        if src == "Карта":
+            card += amt
+        elif src == "Наличные":
+            cash += amt
+        cnt += 1
+
+    return {
+        "card": card,
+        "cash": cash,
+        "total": card + cash,
+        "count": cnt,
+    }
+
+def get_frozen_totals(client):
+    """
+    Общие замороженные суммы по всем машинам (для отчётов).
+    """
+    ws = _ensure_workshop_unified_ws(client)
+    rows = ws.get_all_values()[1:]
+    card = Decimal("0")
+    cash = Decimal("0")
+    for r in rows:
+        if not r or len(r) < 8:
+            continue
+        if (r[0] or "").strip() != "Заморозка":
+            continue
+        amt = _to_amount(r[7])
+        src_raw = (r[6] if len(r) > 6 else "").strip()
+        src = _norm_source(src_raw)
+        if src == "Карта":
+            card += amt
+        elif src == "Наличные":
+            cash += amt
+    return {
+        "card": card,
+        "cash": cash,
+        "total": card + cash,
+    }
+
+def workshop_clear_car_ops(client, car_id: str):
+    """
+    Удаляет из единого листа все Услуги и Заморозку по машине.
+    Вызывай в конце завершения ремонта.
+    """
+    ws = _ensure_workshop_unified_ws(client)
+    rows = ws.get_all_values()
+    to_del = []
+    for i, r in enumerate(rows[1:], start=2):
+        if not r or len(r) < 3:
+            continue
+        if (r[2] or "").strip() != car_id:
+            continue
+        if (r[0] or "").strip() in ("Услуга", "Заморозка"):
+            to_del.append(i)
+    for i in sorted(to_del, reverse=True):
+        ws.delete_rows(i)
+
+
 def _parse_dt_safe(s: str):
     """Пытаемся распарсить 'ДД.ММ.ГГГГ ЧЧ:ММ' или 'ДД.ММ.ГГГГ'. Возвращаем datetime или None."""
     s = (s or "").strip()
@@ -20,35 +223,6 @@ def _parse_dt_safe(s: str):
         except ValueError:
             pass
     return None
-
-WORKSHOP_SHEET = "Мастерская"
-WORKSHOP_HEADERS = ["ID", "Название", "VIN", "Создано"]
-
-SERVICES_SHEET   = "Услуги"
-SERVICES_HEADERS = ["ID", "CarID", "Название", "VIN", "Дата", "Сумма", "Описание"]
-
-
-FREEZE_SHEET   = "Заморозка"
-FREEZE_HEADERS = ["ID", "CarID", "Название", "VIN", "Дата", "Источник", "Сумма", "Описание"]
-# индексы по именам будем искать безопасно
-
-def _ensure_freeze_ws(client):
-    ws = ensure_ws_with_headers(client, FREEZE_SHEET, FREEZE_HEADERS)
-    # миграция: если нет "Источник", вставим колонку F
-    try:
-        header = ws.row_values(1)
-        norm = [h.strip().lower() for h in header]
-        if "источник" not in norm:
-            # вставим новую колонку на позицию 6 (после "Дата")
-            ws.insert_cols([["Источник"]], col=6)
-            # убеждаемся что шапка корректная
-            new_header = ws.row_values(1)
-            # если шапка пустая/короче — обновим полностью
-            if len(new_header) < len(FREEZE_HEADERS):
-                ws.update("A1:H1", [FREEZE_HEADERS])
-    except Exception as e:
-        logger.error(f"freeze sheet migrate error: {e}")
-    return ws
 
 def _norm_source(s: str) -> str:
     s = (s or "").strip().lower()
@@ -64,89 +238,6 @@ def _norm_source(s: str) -> str:
     if s in ("card", "kart", "karta"):
         return "Карта"
     return s.capitalize() if s else ""
-
-
-def get_frozen_breakdown_for_car(client, car_id: str):
-    ws = _ensure_freeze_ws(client)
-    rows = ws.get_all_values()
-    from decimal import Decimal
-    if not rows:
-        return {"card": Decimal("0"), "cash": Decimal("0"), "total": Decimal("0"), "count": 0}
-    idx = _freeze_idx(rows[0])
-    card = Decimal("0"); cash = Decimal("0"); cnt = 0
-    for r in rows[1:]:
-        if not r: 
-            continue
-        if idx["carid"] is None or idx["carid"] >= len(r):
-            continue
-        if (r[idx["carid"]] or "").strip() != car_id:
-            continue
-        amt = _to_amount(r[idx["amount"]]) if (idx["amount"] is not None and idx["amount"] < len(r)) else Decimal("0")
-        src_raw = (r[idx["source"]] if (idx["source"] is not None and idx["source"] < len(r)) else "").strip()
-        src = _norm_source(src_raw)  # ← НОРМАЛИЗАЦИЯ
-        if src == "Карта":
-            card += amt
-        elif src == "Наличные":
-            cash += amt
-        else:
-            # неизвестный/пустой источник — не считаем по источникам, но учитываем в total
-            pass
-        cnt += 1
-    return {"card": card, "cash": cash, "total": card + cash, "count": cnt}
-
-def _ensure_services_ws(client):
-    return ensure_ws_with_headers(client, SERVICES_SHEET, SERVICES_HEADERS)
-
-def get_services_recent_for_car(client, car_id: str, limit: int = 5):
-    """
-    Возвращает последние N услуг по машине (по порядку добавления).
-    Формат элемента: (дата_str, Decimal сумма, описание_str)
-    """
-    ws = _ensure_services_ws(client)
-    rows = ws.get_all_values()[1:]
-    items = []
-    for r in rows:
-        if not r:
-            continue
-        if (r[1] or "").strip() != car_id:
-            continue
-        date_str = (r[4] if len(r) > 4 else "") or ""
-        amount   = _to_amount(r[5] if len(r) > 5 else "0")
-        desc     = (r[6] if len(r) > 6 else "") or "-"
-        items.append((date_str, amount, desc))
-    # последние по добавлению (мы дописываем в конец) → просто берём с конца
-    items = items[-limit:][::-1]
-    return items
-
-def get_services_for_car(client, car_id: str):
-    """
-    Все услуги по машине (без даты).
-    Возвращает список элементов (Decimal amount, str desc) в порядке добавления.
-    """
-    ws = _ensure_services_ws(client)
-    rows = ws.get_all_values()[1:]
-    items = []
-    for r in rows:
-        if not r:
-            continue
-        if (r[1] or "").strip() != car_id:
-            continue
-        amount = _to_amount(r[5] if len(r) > 5 else "0")
-        desc   = (r[6] if len(r) > 6 else "") or "-"
-        items.append((amount, desc))
-    return items
-
-
-def get_services_total_for_car(client, car_id: str) -> Decimal:
-    ws = _ensure_services_ws(client)
-    rows = ws.get_all_values()[1:]
-    total = Decimal("0")
-    for r in rows:
-        if not r:
-            continue
-        if (r[1] or "").strip() == car_id:
-            total += _to_amount(r[5] if len(r) > 5 else "0")
-    return total
 
 def _freeze_idx(header: list[str]) -> dict:
     # по именам, без регистра/пробелов; с fallback по длине
@@ -177,68 +268,6 @@ def _freeze_idx(header: list[str]) -> dict:
         "amount": amount_i,
         "desc":   desc_i,
     }
-
-
-def get_frozen_for_car(client, car_id: str) -> Decimal:
-    ws = _ensure_freeze_ws(client)
-    rows = ws.get_all_values()
-    if not rows:
-        return Decimal("0")
-    idx = _freeze_idx(rows[0])
-    total = Decimal("0")
-    for r in rows[1:]:
-        if not r: 
-            continue
-        if idx["carid"] is not None and idx["carid"] < len(r) and (r[idx["carid"]] or "").strip() == car_id:
-            if idx["amount"] is not None and idx["amount"] < len(r):
-                total += _to_amount(r[idx["amount"]])
-    return total
-
-def get_frozen_by_car(client):
-    ws = _ensure_freeze_ws(client)
-    rows = ws.get_all_values()
-    if not rows:
-        return [], Decimal("0")
-    idx = _freeze_idx(rows[0])
-    by = {}
-    for r in rows[1:]:
-        if not r:
-            continue
-        if idx["carid"] is None or idx["carid"] >= len(r): 
-            continue
-        car_id = (r[idx["carid"]] or "").strip()
-        if not car_id:
-            continue
-        name = (r[idx["name"]] if idx["name"] is not None and idx["name"] < len(r) else "").strip() or "(без названия)"
-        amt  = _to_amount(r[idx["amount"]]) if (idx["amount"] is not None and idx["amount"] < len(r)) else Decimal("0")
-        by.setdefault(car_id, [name, Decimal("0")])
-        by[car_id][1] += amt
-    items = [(cid, nm, sm) for cid, (nm, sm) in by.items()]
-    items.sort(key=lambda t: t[2], reverse=True)
-    total = sum((sm for _, _, sm in items), Decimal("0"))
-    return items, total
-
-def get_frozen_totals(client):
-    ws = _ensure_freeze_ws(client)
-    rows = ws.get_all_values()
-    if not rows:
-        return {"card": Decimal("0"), "cash": Decimal("0"), "total": Decimal("0")}
-    idx = _freeze_idx(rows[0])
-    card = Decimal("0"); cash = Decimal("0")
-    for r in rows[1:]:
-        if not r:
-            continue
-        amt = _to_amount(r[idx["amount"]]) if (idx["amount"] is not None and idx["amount"] < len(r)) else Decimal("0")
-        raw_src = (r[idx["source"]] if (idx["source"] is not None and idx["source"] < len(r)) else "").strip()
-        src = _norm_source(raw_src)  # ← нормализуем перед сравнением
-        if src == "Карта":
-            card += amt
-        elif src == "Наличные":
-            cash += amt
-        else:
-            # старые/пустые значения источника игнорим в разрезе, но total посчитается из суммы card+cash
-            pass
-    return {"card": card, "cash": cash, "total": card + cash}
 
 def ensure_ws_with_headers(client, sheet_name: str, headers: list[str]):
     ws = client.open_by_key(SPREADSHEET_ID).worksheet(sheet_name)
