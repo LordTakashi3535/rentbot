@@ -1979,8 +1979,9 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             client = get_gspread_client()
             ws = client.open_by_key(SPREADSHEET_ID).worksheet("Автомобили")
-            # БЫСТРО: вместо get_all_values()
-            rows = ws.get("A1:H50")  # подгони диапазон под свою шапку
+
+            # БЫСТРО: максимум 50 строк и нужная ширина
+            rows = ws.get("A1:L50")  # подгони L под свою фактическую ширину
 
             if not rows or len(rows) < 2:
                 kb = InlineKeyboardMarkup([
@@ -1990,25 +1991,42 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.edit_message_text("🚗 *Автомобили:*\n\nСписок пуст.", reply_markup=kb, parse_mode="Markdown")
                 return
 
-            header, body = rows[0], rows[1:]
-            # найдём индексы нужных колонок
-            header_idx = {h.strip(): i for i, h in enumerate(header)}
-            name_i = header_idx.get("Название", 1)
-            vin_i  = header_idx.get("VIN", None)
-            end_i  = header_idx.get("Договор до", None)
+            header = rows[0]
+            body = rows[1:]
+
+            # удобный геттер по названию колонки
+            idx = { (h or "").strip(): i for i, h in enumerate(header) }
+            def g(row, col_name, default=""):
+                i = idx.get(col_name)
+                if i is None or i >= len(row):
+                    return default
+                return (row[i] or "").strip()
 
             cards = []
             sep = "─" * 35
+
             for r in body:
                 if not r:
                     continue
-                name = (r[name_i] if name_i is not None and name_i < len(r) else "").strip() or "(без названия)"
-                vin  = (r[vin_i] if vin_i is not None and vin_i < len(r) else "").strip() or "—"
-                end  = (r[end_i] if end_i is not None and end_i < len(r) else "").strip()
-                line = f"🚗 *{name}*\nVIN: `{vin}`"
-                if end:
-                    line += f"\n📅 Договор до: {end}"
-                cards.append(line)
+
+                name         = g(r, "Название", "(без названия)")
+                vin          = g(r, "VIN", "—")
+                plate        = g(r, "Номер", "—")
+                driver       = g(r, "Водитель", "—")
+                driver_phone = g(r, "Телефон водителя", "—")
+                contract_str = g(r, "Договор до", "—")
+
+                card = (
+                    f"🚘 *{name}*\n"
+                    f"🔑 _VIN:_ `{vin}`\n"
+                    f"🔖 _Номер:_ `{plate}`\n"
+                    f"🛡️ _Страховка:_ {_format_date_with_days(g(r, 'Страховка до'))}\n"
+                    f"🧰 _Техосмотр:_ {_format_date_with_days(g(r, 'ТО до'))}\n"
+                    f"👤 _Водитель:_ {driver}\n"
+                    f"📞 _Телефон:_ {driver_phone}\n"
+                    f"📃 _Договор:_ {contract_str}"
+                )
+                cards.append(card)
 
             text = "🚗 *Автомобили:*\n\n" + f"\n{sep}\n".join(cards)
 
