@@ -199,6 +199,37 @@ def get_frozen_totals(client):
         "total": card + cash,
     }
 
+    def get_frozen_by_car(client):
+        ws = client.open_by_key(SPREADSHEET_ID).worksheet("Мастерская_Данные")
+        rows = ws.get_all_values()[1:]
+
+        from decimal import Decimal
+        by = {}
+        for r in rows:
+            # жёстко фильтруем
+            if not r or len(r) < 8:
+                continue
+            if (r[0] or "").strip() != "Заморозка":
+                continue
+
+            car_id = (r[2] or "").strip()
+            if not car_id:
+                continue
+
+            name = (r[3] or "").strip() or "(без названия)"  # "Название"
+            amt = _to_amount(r[7])
+
+            if car_id not in by:
+                by[car_id] = [name, Decimal("0")]
+            by[car_id][1] += amt
+
+        items = [(cid, name, summ) for cid, (name, summ) in by.items()]
+        # отсортируем по сумме
+        items.sort(key=lambda t: t[2], reverse=True)
+
+        total = sum((s for _, _, s in items), Decimal("0"))
+        return items, total
+
 def _parse_dt_safe(s: str):
     """Пытаемся распарсить 'ДД.ММ.ГГГГ ЧЧ:ММ' или 'ДД.ММ.ГГГГ'. Возвращаем datetime или None."""
     s = (s or "").strip()
@@ -2020,52 +2051,55 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             client = get_gspread_client()
 
-            # суммарная заморозка по машинам + раздельно по источникам
-            items, frozen_total = get_frozen_by_car(client)
-            fz = get_frozen_totals(client)  # {'card','cash','total'}
+            # основная инфа
+            summary = compute_summary(client)  # ты её уже показал выше
 
-            s = compute_summary(client)
+            # заморозка по машинам
+            try:
+                frozen_items, frozen_total = get_frozen_by_car(client)
+            except Exception as e:
+                logger.error(f"get_frozen_by_car error: {e}")
+                frozen_items, frozen_total = [], Decimal("0")
 
-            # доступно с учётом заморозки
-            avail_card = s["Карта"] - fz["card"]
-            avail_cash = s["Наличные"] - fz["cash"]
-            avail_total = avail_card + avail_cash
+            # отдельная сводка по заморозке (карта/нал) — если сделаешь
+            try:
+                frozen_totals_all = get_frozen_totals(client)  # если есть такая
+            except Exception:
+                frozen_totals_all = None
 
-            # Блок «заморожено по машинам»
-            frozen_lines = [f"🧊 {name}: {_fmt_amount(sm)}" for _, name, sm in items]
-            frozen_block = ""
-            if frozen_lines:
-                frozen_block = "Заморожено запчасти:\n" + "\n".join(frozen_lines) + "\n\n"
+            lines = []
+            lines.append("📊 *Баланс*")
+            lines.append("")
+            lines.append(f"💼 Всего: *{_fmt_amount(summary['Баланс'])}*")
+            lines.append(f"💳 Карта: {_fmt_amount(summary['Карта'])}")
+            lines.append(f"💵 Наличные: {_fmt_amount(summary['Наличные'])}")
+            lines.append(f"🪙 Начальная: {_fmt_amount(summary['Начальная'])}")
+            lines.append("")
+            lines.append(f"🧊 Заморожено: *{_fmt_amount(frozen_total)}*")
 
-            text = (
-                f"{frozen_block}"
-                f"🏁 Начальная сумма: {_fmt_amount(s['Начальная'])}\n"
-                f"💰 Доход: {_fmt_amount(s['Доход'])}\n"
-                f"💸 Расход: {_fmt_amount(s['Расход'])}\n"
-                f"\n"
-                f"💼 Баланс (по учёту): {_fmt_amount(s['Баланс'])}\n"
-                f"  ├─ 💳 Карта: {_fmt_amount(s['Карта'])}\n"
-                f"  └─ 💵 Наличные: {_fmt_amount(s['Наличные'])}\n"
-                f"\n"
-                f"🧊 Заморожено всего: {_fmt_amount(fz['total'])} "
-                f"(💳 {_fmt_amount(fz['card'])} | 💵 {_fmt_amount(fz['cash'])})\n"
-                f"✅ Доступно сейчас: *_{_fmt_amount(avail_total)}_*\n"
-                f"  ├─ 💳 Карта (доступно): {_fmt_amount(avail_card)}\n"
-                f"  └─ 💵 Наличные (доступно): {_fmt_amount(avail_cash)}"
+            if frozen_items:
+                lines.append("")
+                lines.append("🔧 По машинам:")
+                for car_id, name, summ in frozen_items:
+                    lines.append(f"• {name} — {_fmt_amount(summ)}")
+
+            # если есть разбивка по источникам — покажем
+            if frozen_totals_all:
+                lines.append("")
+                lines.append("💳 Заморожено (карта): " + _fmt_amount(frozen_totals_all.get("card", Decimal("0"))))
+                lines.append("💵 Заморожено (нал): " + _fmt_amount(frozen_totals_all.get("cash", Decimal("0"))))
+
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ Назад", callback_data="menu")],
+            ])
+
+            await query.edit_message_text(
+                "\n".join(lines),
+                parse_mode="Markdown",
+                reply_markup=kb,
             )
-
-            keyboard = InlineKeyboardMarkup(
-                [
-                    [
-                        InlineKeyboardButton("📥 Доход", callback_data="income"),
-                        InlineKeyboardButton("📤 Расход", callback_data="expense"),
-                    ],
-                    [InlineKeyboardButton("⬅️ Назад", callback_data="menu")],
-                ]
-            )
-            await query.edit_message_text(text, reply_markup=keyboard, parse_mode="Markdown")
         except Exception as e:
-            logger.error(f"Ошибка баланса: {e}")
+            logger.error(f"balance error: {e}")
             await query.message.reply_text("⚠️ Не удалось получить баланс.")
         return
 
