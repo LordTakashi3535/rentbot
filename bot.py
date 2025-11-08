@@ -11,12 +11,16 @@ from decimal import Decimal, ROUND_HALF_UP
 
 DATE_FMT = "%d.%m.%Y %H:%M"  # как пишем в листы
 
-WORKSHOP_SHEET = "Мастерская"  # ← можешь оставить свой лист с машинами (только машины)
+# ---- мастерская: список машин ----
+WORKSHOP_SHEET = "Мастерская"
+WORKSHOP_HEADERS = ["ID", "Название", "VIN", "Создано"]
+
+# ---- мастерская: единый лист для услуг и заморозки ----
 WORKSHOP_UNIFIED_SHEET = "Мастерская_Данные"
 WORKSHOP_UNIFIED_HEADERS = [
-    "Тип",        # "Машина" / "Услуга" / "Заморозка"
-    "ID",         # ID машины или записи
-    "CarID",      # для связки с машиной
+    "Тип",
+    "ID",
+    "CarID",
     "Название",
     "VIN",
     "Дата",
@@ -194,25 +198,6 @@ def get_frozen_totals(client):
         "cash": cash,
         "total": card + cash,
     }
-
-def workshop_clear_car_ops(client, car_id: str):
-    """
-    Удаляет из единого листа все Услуги и Заморозку по машине.
-    Вызывай в конце завершения ремонта.
-    """
-    ws = _ensure_workshop_unified_ws(client)
-    rows = ws.get_all_values()
-    to_del = []
-    for i, r in enumerate(rows[1:], start=2):
-        if not r or len(r) < 3:
-            continue
-        if (r[2] or "").strip() != car_id:
-            continue
-        if (r[0] or "").strip() in ("Услуга", "Заморозка"):
-            to_del.append(i)
-    for i in sorted(to_del, reverse=True):
-        ws.delete_rows(i)
-
 
 def _parse_dt_safe(s: str):
     """Пытаемся распарсить 'ДД.ММ.ГГГГ ЧЧ:ММ' или 'ДД.ММ.ГГГГ'. Возвращаем datetime или None."""
