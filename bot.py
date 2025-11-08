@@ -33,6 +33,11 @@ WORKSHOP_UNIFIED_HEADERS = [
     "Описание",  # 8
 ]
 
+def ws_get_limited(ws, cols="A:H", limit=50):
+    # cols="A:H" -> возьмём A1:H50
+    left, right = cols.split(":")
+    return ws.get(f"{left}1:{right}{limit}")
+
 def _ws_norm_source(raw: str) -> str:
     """
     Нормализует значение из колонки 'Источник' в мастерской.
@@ -1273,31 +1278,57 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         car_id = data.split(":", 1)[1]
         try:
             client = get_gspread_client()
-            ws = ensure_ws_with_headers(client, WORKSHOP_SHEET, WORKSHOP_HEADERS)
 
-            row, header, idx = _get_row_by_id(ws, car_id)
+            # Берём лист "Мастерская"
+            ws = client.open_by_key(SPREADSHEET_ID).worksheet(WORKSHOP_SHEET)
+            # Быстрый вариант: максимум 50 строк и первые колонки
+            rows = ws.get("A1:H50")
+
+            # если лист вдруг пустой — гарантируем шапку как раньше
+            if not rows:
+                ws = ensure_ws_with_headers(client, WORKSHOP_SHEET, WORKSHOP_HEADERS)
+                rows = ws.get("A1:H50")
+
+            header = rows[0] if rows else []
+            # мапа "Название колонки" -> индекс
+            idx = { (h or "").strip(): i for i, h in enumerate(header) }
+
+            # ищем нашу машину среди первых 50 строк
+            row = None
+            for r in rows[1:]:
+                if not r:
+                    continue
+                rid = (r[0] or "").strip() if len(r) > 0 else ""
+                if rid == car_id:
+                    row = r
+                    break
+
             if row is None:
                 kb = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="workshop")]])
                 await query.edit_message_text("🚫 Машина не найдена в листе «Мастерская».", reply_markup=kb)
                 return
 
+            # геттер как у тебя
             def g(col_name: str, default=""):
-                i = idx.get(col_name, None)
-                return (row[i].strip() if (i is not None and i < len(row) and row[i]) else default)
+                i = idx.get(col_name)
+                if i is None or i >= len(row):
+                    return default
+                v = row[i]
+                return v.strip() if v else default
 
             name = g("Название", "(без названия)")
             vin  = g("VIN", "—")
 
+            # эти функции оставляем как у тебя — они уже под твой "единый лист"
             frozen         = get_frozen_for_car(client, car_id)
             services_total = get_services_total_for_car(client, car_id)
-
             all_services   = get_services_for_car(client, car_id)
             services_count = len(all_services)
 
             recent = get_services_recent_for_car(client, car_id, limit=5)
             if recent:
                 lines = []
-                for _dt, amt, desc in recent:  # дату не выводим
+                for _dt, amt, desc in recent:
                     tail = f" — {desc}" if desc and desc != "-" else ""
                     lines.append(f"• {_fmt_amount(amt)}{tail}")
                 services_list_block = "Последние услуги:\n" + "\n".join(lines) + "\n"
