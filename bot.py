@@ -1031,9 +1031,13 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             client = get_gspread_client()
             ws = ensure_ws_with_headers(client, WORKSHOP_SHEET, WORKSHOP_HEADERS)
-            rows = ws.get_all_values()[1:]  # пропускаем шапку
+            # БЫСТРО: берём только первые 50 строк и только нужные колонки
+            rows = ws.get("A1:D50")  # ID | Название | VIN | Создано (как у тебя в шапке)
 
-            if not rows:
+            # rows[0] — шапка
+            body = rows[1:] if len(rows) > 1 else []
+
+            if not body:
                 kb = InlineKeyboardMarkup([
                     [InlineKeyboardButton("➕ Добавить машину", callback_data="workshop_add")],
                     [InlineKeyboardButton("⬅️ Назад", callback_data="menu")],
@@ -1045,13 +1049,14 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 return
 
-            # кнопки по машинам
             buttons = []
-            for r in rows:
+            for r in body:
                 if not r:
                     continue
-                car_id = (r[0] or "").strip()
-                name   = (r[1] or "").strip() or "(без названия)"
+                car_id = (r[0] or "").strip() if len(r) > 0 else ""
+                if not car_id:
+                    continue
+                name = (r[1] or "").strip() if len(r) > 1 else "(без названия)"
                 buttons.append([InlineKeyboardButton(name, callback_data=f"workshop_view:{car_id}")])
 
             buttons.append([InlineKeyboardButton("➕ Добавить машину", callback_data="workshop_add")])
@@ -1065,7 +1070,8 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"workshop list error: {e}")
             await query.message.reply_text("⚠️ Не удалось открыть Автомастерскую.")
-        return 
+        return
+
 
     elif data == "settings":
         kb = InlineKeyboardMarkup([
@@ -1973,47 +1979,38 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             client = get_gspread_client()
             ws = client.open_by_key(SPREADSHEET_ID).worksheet("Автомобили")
-            rows = ws.get_all_values()
+            # БЫСТРО: вместо get_all_values()
+            rows = ws.get("A1:H50")  # подгони диапазон под свою шапку
 
             if not rows or len(rows) < 2:
-                text = "🚗 *Автомобили:*\n\nСписок пуст."
-            else:
-                header = rows[0]
-                body = rows[1:]
+                kb = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("➕ Создать автомобиль", callback_data="create_car")],
+                    [InlineKeyboardButton("⬅️ Назад", callback_data="menu")],
+                ])
+                await query.edit_message_text("🚗 *Автомобили:*\n\nСписок пуст.", reply_markup=kb, parse_mode="Markdown")
+                return
 
-                # Индексируем колонки по заголовкам
-                idx = {name.strip(): i for i, name in enumerate(header)}
-                def g(row, key):
-                    i = idx.get(key)
-                    return row[i].strip() if (i is not None and i < len(row)) else ""
+            header, body = rows[0], rows[1:]
+            # найдём индексы нужных колонок
+            header_idx = {h.strip(): i for i, h in enumerate(header)}
+            name_i = header_idx.get("Название", 1)
+            vin_i  = header_idx.get("VIN", None)
+            end_i  = header_idx.get("Договор до", None)
 
-                cards = []
-                for r in body:
-                    name  = g(r, "Название") or "-"
-                    vin   = g(r, "VIN") or "-"
-                    plate = g(r, "Номер") or "-"
+            cards = []
+            sep = "─" * 35
+            for r in body:
+                if not r:
+                    continue
+                name = (r[name_i] if name_i is not None and name_i < len(r) else "").strip() or "(без названия)"
+                vin  = (r[vin_i] if vin_i is not None and vin_i < len(r) else "").strip() or "—"
+                end  = (r[end_i] if end_i is not None and end_i < len(r) else "").strip()
+                line = f"🚗 *{name}*\nVIN: `{vin}`"
+                if end:
+                    line += f"\n📅 Договор до: {end}"
+                cards.append(line)
 
-                    ins_left  = _format_date_with_days(g(r, "Страховка до"))
-                    tech_left = _format_date_with_days(g(r, "ТО до"))
-                    driver = g(r, "Водитель") or "—"
-                    driver_phone = g(r, "Телефон водителя") or "—"
-                    contract_str = _format_date_with_days(g(r, "Договор до"))  # 12.11.2025 (30 дней)
-
-                    card = (
-                        f"🚘 *{name}*\n"
-                        f"🔑 _VIN:_ `{vin}`\n"
-                        f"🔖 _Номер:_ `{plate}`\n"
-                        f"🛡️ _Страховка:_ {_format_date_with_days(g(r, 'Страховка до'))}\n"
-                        f"🧰 _Техосмотр:_ {_format_date_with_days(g(r, 'ТО до'))}\n"
-                        f"👤 _Водитель:_ {driver}\n"
-                        f"📞 _Телефон:_ {driver_phone}\n"
-                        f"📃 _Договор:_ {contract_str}"
-                    )
-                    cards.append(card)
-
-                separator = "─" * 35  # ← длина линии (поменяй на сколько хочешь)
-                text = "🚗 *Автомобили:*\n\n" + f"\n{separator}\n".join(cards)
-
+            text = "🚗 *Автомобили:*\n\n" + f"\n{sep}\n".join(cards)
 
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("➕ Создать автомобиль", callback_data="create_car")],
@@ -2025,7 +2022,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Ошибка списка авто: {e}")
             await query.message.reply_text("⚠️ Не удалось загрузить список «Автомобили».")
-
+        return
 
     elif data == "create_car":
         # старт мастера создания авто
