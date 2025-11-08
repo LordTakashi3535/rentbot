@@ -2037,6 +2037,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="workshop")]])
                 )
                 return
+
             car_name = (row[idx.get("Название", 1)] if len(row) > 1 else "") or "(без названия)"
             car_vin  = (row[idx.get("VIN", 2)] if len(row) > 2 else "") or "—"
         except Exception as e:
@@ -2052,11 +2053,11 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["step"]     = "ws_service_amount"
 
         await query.edit_message_text(
-            f"🛠️ *Добавить услугу* для *{car_name}*\n🔑 VIN: `{car_vin}`\n\nВведите стоимость:",
+            f"🛠️ *Добавление услуги* для *{car_name}*\n🔑 VIN: `{car_vin}`\n\nВведите сумму услуги:",
             reply_markup=back_or_cancel_keyboard(f"workshop_view:{car_id}"),
             parse_mode="Markdown"
         )
-        return 
+        return
 
     elif data in ["report_7", "report_30"]:
         days = 7 if data == "report_7" else 30
@@ -2306,69 +2307,6 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
                 reply_markup=back_or_cancel_keyboard(return_cb)
             )
         return
-    # === Автомастерская: добавление услуги ===
-    if context.user_data.get("action") == "ws_service":
-        step = context.user_data.get("step")
-        txt  = (update.message.text or "").strip()
-
-        if step == "ws_service_amount":
-            try:
-                amount = _to_amount(txt)
-                if amount <= 0:
-                    raise ValueError
-            except Exception:
-                await update.message.reply_text(
-                    "⚠️ Введите положительное число (например: 350.00)",
-                    reply_markup=back_or_cancel_keyboard(f"workshop_view:{context.user_data.get('car_id','')}")
-                )
-                return
-            context.user_data["amount"] = amount
-            context.user_data["step"] = "ws_service_desc"
-            await update.message.reply_text(
-                "Добавьте описание услуги (например: СТО, шиномонтаж, эвакуатор):",
-                reply_markup=back_or_cancel_keyboard(f"workshop_view:{context.user_data.get('car_id','')}")
-            )
-            return
-
-        if step == "ws_service_desc":
-            desc = txt or "-"
-            try:
-                client = get_gspread_client()
-                ws = _ensure_services_ws(client)
-
-                car_id   = context.user_data.get("car_id")
-                car_name = context.user_data.get("car_name") or "(без названия)"
-                car_vin  = context.user_data.get("car_vin") or "—"
-                amount   = context.user_data.get("amount", Decimal("0"))
-                now      = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
-                rec_id   = datetime.datetime.now().strftime("sv_%Y%m%d_%H%M%S")
-
-                ws.append_row(
-                    [rec_id, car_id, car_name, car_vin, now, str(amount.quantize(Decimal("0.01"))), desc],
-                    value_input_option="USER_ENTERED"
-                )
-
-                total_services = get_services_total_for_car(client, car_id)
-
-                kb = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("⬅️ Назад к машине", callback_data=f"workshop_view:{car_id}")],
-                    [InlineKeyboardButton("🛠️ Добавить ещё услугу", callback_data=f"workshop_add_service:{car_id}")],
-                    [InlineKeyboardButton("⬅️ К списку", callback_data="workshop")],
-                ])
-                context.user_data.clear()
-                await update.message.reply_text(
-                    f"✅ Услуга добавлена: {_fmt_amount(amount)}\n"
-                    f"🛠️ Итого по услугам: {_fmt_amount(total_services)}",
-                    parse_mode="Markdown",
-                    reply_markup=kb
-                )
-            except Exception as e:
-                logger.error(f"ws_service save error: {e}")
-                await update.message.reply_text(
-                    "❌ Не удалось сохранить услугу.",
-                    reply_markup=back_or_cancel_keyboard(f"workshop_view:{context.user_data.get('car_id','')}")
-                )
-            return
   
     # === Автомастерская: добавление машины ===
     if context.user_data.get("action") == "workshop_add":
@@ -2431,93 +2369,104 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
                 logger.error(f"workshop_add save error: {e}")
                 await update.message.reply_text("❌ Не удалось сохранить машину.", reply_markup=back_or_cancel_keyboard("workshop"))
             return
-        # === Автомастерская: покупка запчастей (заморозка) ===
-    # === Автомастерская: покупка запчастей (заморозка) ===
+
     if context.user_data.get("action") == "ws_buy":
         step = context.user_data.get("step")
-        txt  = (update.message.text or "").strip()
-
         if step == "ws_buy_amount":
+            amt_str = text.replace(",", ".").strip()
             try:
-                amount = _to_amount(txt)
-                if amount <= 0:
+                amt = _to_amount(amt_str)
+                if amt <= 0:
                     raise ValueError
             except Exception:
-                await update.message.reply_text(
-                    "⚠️ Введите положительное число (пример: 250.00)",
-                    reply_markup=back_or_cancel_keyboard(f"workshop_view:{context.user_data.get('car_id','')}")
-                )
+                await update.message.reply_text("❗ Введите сумму числом, например: 3500")
                 return
-            context.user_data["amount"] = amount
+
+            car_id = context.user_data.get("car_id")  # мы его кладём раньше в callback'е "workshop_buy_parts:..."
+
+            # сохраним сумму и попросим выбрать источник уже через кнопки
+            context.user_data["amount"] = amt
             context.user_data["step"] = "ws_buy_source"
-            car_id = context.user_data.get("car_id","")
-            # спрашиваем источник кнопками
             kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("💳 Карта",    callback_data=f"ws_buy_src:card:{car_id}")],
+                [InlineKeyboardButton("💳 Карта", callback_data=f"ws_buy_src:card:{car_id}")],
                 [InlineKeyboardButton("💵 Наличные", callback_data=f"ws_buy_src:cash:{car_id}")],
-                [InlineKeyboardButton("❌ Отмена",   callback_data=f"workshop_view:{car_id}")],
+                [InlineKeyboardButton("❌ Отмена", callback_data=f"workshop_view:{car_id}")],
             ])
-            await update.message.reply_text("Где замораживаем деньги?", reply_markup=kb)
+            await update.message.reply_text("Выберите источник оплаты:", reply_markup=kb)
+            return
+    # другие шаги для ws_buy обрабатываются в callback'ах
+
+    # === МАСТЕРСКАЯ: добавление услуги ===
+    if context.user_data.get("action") == "ws_service":
+        step = context.user_data.get("step")
+
+        # 1) пользователь ввёл сумму услуги
+        if step == "ws_service_amount":
+            amt_str = text.replace(",", ".").strip()
+            try:
+                amt = _to_amount(amt_str)
+                if amt <= 0:
+                    raise ValueError
+            except Exception:
+                await update.message.reply_text("❗ Введите сумму числом, например: 1500")
+                return
+
+            context.user_data["amount"] = amt
+            context.user_data["step"] = "ws_service_desc"
+            await update.message.reply_text("Введите описание услуги:")
             return
 
-        if step == "ws_buy_desc":
-            desc = txt or "-"
+        # 2) пользователь ввёл описание → сохраняем в Мастерская_Данные и шлём в группу
+        if step == "ws_service_desc":
+            desc = text.strip() or "-"
+            car_id   = context.user_data.get("car_id")
+            car_name = context.user_data.get("car_name", "")
+            car_vin  = context.user_data.get("car_vin", "")
+            amount   = context.user_data.get("amount")
+
             try:
                 client = get_gspread_client()
-                ws = _ensure_freeze_ws(client)
-                now = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
-
-                car_id   = context.user_data.get("car_id")
-                car_name = context.user_data.get("car_name") or "(без названия)"
-                car_vin  = context.user_data.get("car_vin") or "—"
-                amount   = context.user_data.get("amount", Decimal("0"))
-                raw_source = context.user_data.get("source", "")  # "Карта" / "Наличные" / возможные варианты
-                source = _norm_source(raw_source) or "Карта"      # подстрахуемся дефолтом
-                rec_id = datetime.datetime.now().strftime("fz_%Y%m%d_%H%M%S")
-
-                ws.append_row(
-                    [rec_id, car_id, car_name, car_vin, now, source, str(amount.quantize(Decimal("0.01"))), desc],
-                    value_input_option="USER_ENTERED"
-                )
-                # сумма заморозки по машине
-                frozen = get_frozen_for_car(client, car_id)
-
-                # 🔔 Уведомление в группу
-                try:
-                    src_emoji = "💳" if source == "Карта" else "💵"
-                    desc_q = f" — {desc}" if desc and desc != "-" else ""
-                    group_msg = (
-                        f"🧊 Заморозка запчастей: {src_emoji} +{_fmt_amount(amount)} на *{car_name}*{desc_q}\n"
-                        f"Итого по машине: {_fmt_amount(frozen)}"
-                    )
-                    await context.bot.send_message(
-                        chat_id=REMINDER_CHAT_ID,
-                        text=group_msg,
-                        parse_mode="Markdown"
-                    )
-                except Exception as e:
-                    logger.error(f"freeze group notify error: {e}")
-
-                kb = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("⬅️ Назад к машине", callback_data=f"workshop_view:{car_id}")],
-                    [InlineKeyboardButton("🧾 Купить ещё", callback_data=f"workshop_buy_parts:{car_id}")],
-                    [InlineKeyboardButton("⬅️ К списку", callback_data="workshop")],
-                ])
-                context.user_data.clear()
-                await update.message.reply_text(
-                    f"✅ Заморожено {_fmt_amount(amount)} для *{car_name}*.\n"
-                    f"🧊 Итого по машине: {_fmt_amount(frozen)}",
-                    parse_mode="Markdown",
-                    reply_markup=kb
+                add_workshop_record(
+                    client,
+                    kind="Услуга",
+                    car_id=car_id,
+                    name=car_name,
+                    vin=car_vin,
+                    source="",  # для услуги можно не указывать
+                    amount=amount,
+                    desc=desc,
                 )
             except Exception as e:
-                logger.error(f"ws_buy save error: {e}")
-                await update.message.reply_text(
-                    "❌ Не удалось сохранить покупку.",
-                    reply_markup=back_or_cancel_keyboard(f"workshop_view:{context.user_data.get('car_id','')}")
-                )
-            return
+                logger.error(f"workshop add service save error: {e}")
+                await update.message.reply_text("⚠️ Не удалось сохранить услугу.")
+                return
 
+            # 🔔 в группу
+            try:
+                # если у тебя есть _fmt_amount, лучше вот так:
+                amount_txt = _fmt_amount(amount)
+            except Exception:
+                amount_txt = str(amount)
+
+            try:
+                txt = (
+                    "🛠️ Добавлена услуга\n"
+                    f"🚗 {car_name} (VIN: {car_vin})\n"
+                    f"💰 {amount_txt}\n"
+                    f"📝 {desc}"
+                )
+                await context.bot.send_message(chat_id=REMINDER_CHAT_ID, text=txt)
+            except Exception as e:
+                logger.error(f"send group service error: {e}")
+
+            context.user_data.clear()
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ К машине", callback_data=f"workshop_view:{car_id}")],
+                [InlineKeyboardButton("⬅️ К списку", callback_data="workshop")],
+            ])
+            await update.message.reply_text("✅ Услуга сохранена.", reply_markup=kb)
+            return
+        
     # ====== ШАГ ВВОДА СУММЫ ======
     if step == "amount":
         try:
