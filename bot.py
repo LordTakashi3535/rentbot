@@ -695,6 +695,7 @@ def compute_balance(client):
     - Наличные = SUM(Доход!E) - SUM(Расход!E)
     - Карта     = INITIAL_BALANCE + SUM(Доход!D) - SUM(Расход!D)
     - Баланс    = Карта + Наличные
+    + добавим: Заморожено (из Мастерская_Данные), если лист есть
     """
     income_ws = client.open_by_key(SPREADSHEET_ID).worksheet("Доход")
     expense_ws = client.open_by_key(SPREADSHEET_ID).worksheet("Расход")
@@ -705,14 +706,18 @@ def compute_balance(client):
     income_card = Decimal("0")
     income_cash = Decimal("0")
     for r in income_rows:
-        if len(r) > 3: income_card += _to_amount(r[3])
-        if len(r) > 4: income_cash += _to_amount(r[4])
+        if len(r) > 3:
+            income_card += _to_amount(r[3])
+        if len(r) > 4:
+            income_cash += _to_amount(r[4])
 
     expense_card = Decimal("0")
     expense_cash = Decimal("0")
     for r in expense_rows:
-        if len(r) > 3: expense_card += _to_amount(r[3])
-        if len(r) > 4: expense_cash += _to_amount(r[4])
+        if len(r) > 3:
+            expense_card += _to_amount(r[3])
+        if len(r) > 4:
+            expense_cash += _to_amount(r[4])
 
     initial = get_initial_balance(client)
 
@@ -720,7 +725,29 @@ def compute_balance(client):
     card  = initial + income_card - expense_card
     total = card + cash
 
-    return {"Баланс": total, "Карта": card, "Наличные": cash, "Начальная": initial}
+    # попробуем подтянуть заморозку из единого листа мастерской
+    frozen_total = Decimal("0")
+    try:
+        ws = client.open_by_key(SPREADSHEET_ID).worksheet("Мастерская_Данные")
+        rows = ws.get_all_values()[1:]
+        for r in rows:
+            if not r or len(r) < 8:
+                continue
+            if (r[0] or "").strip() != "Заморозка":
+                continue
+            frozen_total += _to_amount(r[7])
+    except Exception:
+        # если листа нет — просто игнор
+        pass
+
+    return {
+        "Баланс": total,
+        "Карта": card,
+        "Наличные": cash,
+        "Начальная": initial,
+        "Заморожено": frozen_total,
+    }
+
 
 def compute_summary(client):
     """
@@ -731,6 +758,7 @@ def compute_summary(client):
     - Карта = INITIAL_BALANCE + SUM(Доход!D) - SUM(Расход!D)
     - Баланс = Карта + Наличные
     - Заработано (Чистая прибыль) = Доход - Расход
+    + Заморожено = сумма по типу "Заморозка" из листа "Мастерская_Данные"
     """
     income_ws = client.open_by_key(SPREADSHEET_ID).worksheet("Доход")
     expense_ws = client.open_by_key(SPREADSHEET_ID).worksheet("Расход")
@@ -741,32 +769,49 @@ def compute_summary(client):
     income_card = Decimal("0")
     income_cash = Decimal("0")
     for r in income_rows:
-        if len(r) > 3: income_card += _to_amount(r[3])  # 💳
-        if len(r) > 4: income_cash += _to_amount(r[4])  # 💵
+        if len(r) > 3:
+            income_card += _to_amount(r[3])  # 💳
+        if len(r) > 4:
+            income_cash += _to_amount(r[4])  # 💵
 
     expense_card = Decimal("0")
     expense_cash = Decimal("0")
     for r in expense_rows:
-        if len(r) > 3: expense_card += _to_amount(r[3])  # 💳
-        if len(r) > 4: expense_cash += _to_amount(r[4])  # 💵
+        if len(r) > 3:
+            expense_card += _to_amount(r[3])  # 💳
+        if len(r) > 4:
+            expense_cash += _to_amount(r[4])  # 💵
 
     income_total  = income_card + income_cash
     expense_total = expense_card + expense_cash
 
-    # Динамическая начальная сумма, если функция есть; иначе — константа.
+    # Динамическая начальная сумма
     try:
-        initial = get_initial_balance(client)  # динамический вариант (из "Сводка")
+        initial = get_initial_balance(client)
     except NameError:
         try:
-            initial = INITIAL_BALANCE          # старый вариант (константа в коде)
+            initial = INITIAL_BALANCE
         except NameError:
             initial = Decimal("0")
 
     cash    = income_cash - expense_cash
     card    = initial + income_card - expense_card
     balance = card + cash
+    earned  = income_total - expense_total
 
-    earned  = income_total - expense_total  # <-- ЧИСТАЯ ПРИБЫЛЬ
+    # подтянем заморозку из мастерской
+    frozen_total = Decimal("0")
+    try:
+        ws = client.open_by_key(SPREADSHEET_ID).worksheet("Мастерская_Данные")
+        rows = ws.get_all_values()[1:]
+        for r in rows:
+            if not r or len(r) < 8:
+                continue
+            if (r[0] or "").strip() != "Заморозка":
+                continue
+            frozen_total += _to_amount(r[7])
+    except Exception:
+        pass
 
     return {
         "Начальная": initial,
@@ -775,8 +820,9 @@ def compute_summary(client):
         "Наличные": cash,
         "Карта": card,
         "Баланс": balance,
-        "Заработано": earned,  # теперь это Доход − Расход
-    } 
+        "Заработано": earned,
+        "Заморожено": frozen_total,
+    }
 
 # Статичная клавиатура с кнопкой "Меню" под полем ввода
 def persistent_menu_keyboard():
