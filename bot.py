@@ -1567,20 +1567,25 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
     elif data.startswith("ws_buy_src:"):
-        # формат: ws_buy_src:card:<car_id>  или ws_buy_src:cash:<car_id>
+        # формат: ws_buy_src:card:<car_id>
         _, src, car_id = data.split(":", 2)
         source = "Карта" if src == "card" else "Наличные"
-        # сохраняем выбор и просим описание
+
+        # шаг описания
         context.user_data["action"] = "ws_buy"
         context.user_data["step"] = "ws_buy_desc"
         context.user_data["source"] = source
-        context.user_data["ws_freeze_source"] = source  # ← дублируем для совместимости
-        # car_id/имя/vin/amount уже лежат в user_data из предыдущих шагов
+        context.user_data["ws_freeze_source"] = source  # на будущее
+
         await query.edit_message_text(
             "Добавьте описание (что купили) — можно одним словом:",
-            reply_markup=back_or_cancel_keyboard(f"workshop_view:{car_id}")
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ Назад", callback_data=f"workshop_view:{car_id}")],
+                [InlineKeyboardButton("❌ Отмена", callback_data=f"workshop_view:{car_id}")],
+            ])
         )
-        return 
+        return
+
 
     elif data.startswith("income_cat|"):
         cat_id = data.split("|", 1)[1]
@@ -2370,10 +2375,13 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
                 await update.message.reply_text("❌ Не удалось сохранить машину.", reply_markup=back_or_cancel_keyboard("workshop"))
             return
 
+     # === МАСТЕРСКАЯ: покупка запчастей ===
     if context.user_data.get("action") == "ws_buy":
         step = context.user_data.get("step")
+
+        # Шаг 1: ввели сумму
         if step == "ws_buy_amount":
-            amt_str = text.replace(",", ".").strip()
+            amt_str = (update.message.text or "").replace(",", ".").strip()
             try:
                 amt = _to_amount(amt_str)
                 if amt <= 0:
@@ -2382,11 +2390,12 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
                 await update.message.reply_text("❗ Введите сумму числом, например: 3500")
                 return
 
-            car_id = context.user_data.get("car_id")  # мы его кладём раньше в callback'е "workshop_buy_parts:..."
+            car_id = context.user_data.get("car_id")
 
-            # сохраним сумму и попросим выбрать источник уже через кнопки
+            # сохранили и просим источник
             context.user_data["amount"] = amt
             context.user_data["step"] = "ws_buy_source"
+
             kb = InlineKeyboardMarkup([
                 [InlineKeyboardButton("💳 Карта", callback_data=f"ws_buy_src:card:{car_id}")],
                 [InlineKeyboardButton("💵 Наличные", callback_data=f"ws_buy_src:cash:{car_id}")],
@@ -2394,15 +2403,66 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
             ])
             await update.message.reply_text("Выберите источник оплаты:", reply_markup=kb)
             return
-    # другие шаги для ws_buy обрабатываются в callback'ах
+
+        # Шаг 3: после выбора источника ввели описание
+        if step == "ws_buy_desc":
+            text = (update.message.text or "").strip()
+            desc = text or "Покупка запчастей"
+
+            car_id   = context.user_data.get("car_id")
+            car_name = context.user_data.get("car_name", "")
+            car_vin  = context.user_data.get("car_vin", "")
+            amount   = context.user_data.get("amount")
+            source   = context.user_data.get("source", "Карта")
+
+            try:
+                client = get_gspread_client()
+                add_workshop_record(
+                    client,
+                    kind="Заморозка",
+                    car_id=car_id,
+                    name=car_name,
+                    vin=car_vin,
+                    source=source,
+                    amount=amount,
+                    desc=desc,
+                )
+            except Exception as e:
+                logger.error(f"workshop buy parts save error: {e}")
+                await update.message.reply_text("⚠️ Не удалось сохранить покупку запчастей.")
+                return
+
+            # сообщение в группу
+            try:
+                try:
+                    amount_txt = _fmt_amount(amount)
+                except Exception:
+                    amount_txt = str(amount)
+                msg = (
+                    "🧾 Покупка запчастей\n"
+                    f"🚗 {car_name} (VIN: {car_vin})\n"
+                    f"💰 {amount_txt} → {source}\n"
+                    f"📝 {desc}"
+                )
+                await context.bot.send_message(chat_id=REMINDER_CHAT_ID, text=msg)
+            except Exception as e:
+                logger.error(f"send group buy parts error: {e}")
+
+            context.user_data.clear()
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ К машине", callback_data=f"workshop_view:{car_id}")],
+                [InlineKeyboardButton("⬅️ К списку", callback_data="workshop")],
+            ])
+            await update.message.reply_text("✅ Покупка запчастей сохранена.", reply_markup=kb)
+            return
 
     # === МАСТЕРСКАЯ: добавление услуги ===
     if context.user_data.get("action") == "ws_service":
         step = context.user_data.get("step")
 
-        # 1) пользователь ввёл сумму услуги
+        # Шаг 1: сумма услуги
         if step == "ws_service_amount":
-            amt_str = text.replace(",", ".").strip()
+            amt_str = (update.message.text or "").replace(",", ".").strip()
             try:
                 amt = _to_amount(amt_str)
                 if amt <= 0:
@@ -2416,9 +2476,9 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
             await update.message.reply_text("Введите описание услуги:")
             return
 
-        # 2) пользователь ввёл описание → сохраняем в Мастерская_Данные и шлём в группу
+        # Шаг 2: описание услуги
         if step == "ws_service_desc":
-            desc = text.strip() or "-"
+            desc = (update.message.text or "").strip() or "-"
             car_id   = context.user_data.get("car_id")
             car_name = context.user_data.get("car_name", "")
             car_vin  = context.user_data.get("car_vin", "")
@@ -2432,7 +2492,7 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
                     car_id=car_id,
                     name=car_name,
                     vin=car_vin,
-                    source="",  # для услуги можно не указывать
+                    source="",
                     amount=amount,
                     desc=desc,
                 )
@@ -2441,21 +2501,19 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
                 await update.message.reply_text("⚠️ Не удалось сохранить услугу.")
                 return
 
-            # 🔔 в группу
+            # сообщение в группу
             try:
-                # если у тебя есть _fmt_amount, лучше вот так:
-                amount_txt = _fmt_amount(amount)
-            except Exception:
-                amount_txt = str(amount)
-
-            try:
-                txt = (
+                try:
+                    amount_txt = _fmt_amount(amount)
+                except Exception:
+                    amount_txt = str(amount)
+                msg = (
                     "🛠️ Добавлена услуга\n"
                     f"🚗 {car_name} (VIN: {car_vin})\n"
                     f"💰 {amount_txt}\n"
                     f"📝 {desc}"
                 )
-                await context.bot.send_message(chat_id=REMINDER_CHAT_ID, text=txt)
+                await context.bot.send_message(chat_id=REMINDER_CHAT_ID, text=msg)
             except Exception as e:
                 logger.error(f"send group service error: {e}")
 
