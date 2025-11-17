@@ -1872,16 +1872,39 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     row_inc[4] = q
                 income_ws.append_row(row_inc, value_input_option="USER_ENTERED")
 
-            # 5. убираем машину из Мастерская
+            # ===== 4. Чистим лист "Мастерская_Данные" по этой машине =====
+            try:
+                ws_data = client.open_by_key(SPREADSHEET_ID).worksheet("Мастерская_Данные")
+                rows = ws_data.get_all_values()
+                rows_to_delete = []
+
+                for i, r in enumerate(rows[1:], start=2):
+                    if not r or len(r) < 3:
+                        continue
+                    cid = (r[2] or "").strip()
+                    if cid != car_id:
+                        continue
+                    typ = (r[0] or "").strip()
+                    if typ in ("Услуга", "Заморозка"):
+                        rows_to_delete.append(i)
+
+                for idx in reversed(rows_to_delete):
+                    ws_data.delete_rows(idx)
+
+                logger.info(f"Удалено {len(rows_to_delete)} строк из Мастерская_Данные для CarID={car_id}")
+            except Exception as e:
+                logger.warning(f"Не удалось очистить Мастерская_Данные для машины {car_id}: {e}")
+
+            # ===== 5. Удаляем машину из листа "Мастерская" =====
             try:
                 ws_cars = client.open_by_key(SPREADSHEET_ID).worksheet(WORKSHOP_SHEET)
-                car_rows = ws_cars.get_all_values()
-                for i, r in enumerate(car_rows[1:], start=2):
-                    if r and (r[0] or "").strip() == car_id:
+                rows = ws_cars.get_all_values()
+                for i, r in enumerate(rows[1:], start=2):
+                    if len(r) > 0 and r[0] == car_id:
                         ws_cars.delete_rows(i)
                         break
             except Exception as e:
-                logger.warning(f"Не удалось удалить машину из Мастерская: {e}")
+                logger.warning(f"Не удалось удалить машину из листа Мастерская: {e}")
 
             # ===== 5. Сообщение и финал =====
             txt = [
@@ -3044,19 +3067,65 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
 
             # сообщение в группу
             try:
+                from decimal import Decimal
+
+                # формат суммы
                 try:
                     amount_txt = _fmt_amount(amount)
                 except Exception:
                     amount_txt = str(amount)
-                msg = (
-                    "🛠️ Добавлена услуга\n"
-                    f"🚗 {car_name} (VIN: {car_vin})\n"
-                    f"💰 {amount_txt}\n"
-                    f"📝 {desc}"
-                )
+
+                # ===== подсчёт услуг по машине =====
+                try:
+                    services = get_services_for_car(client, str(car_id))
+                    total_services = sum((amt for amt, _ in services), Decimal("0"))
+                    total_services_txt = _fmt_amount(total_services)
+                except Exception as e:
+                    logger.error(f"get_services_for_car error: {e}")
+                    total_services_txt = "—"
+
+                # ===== баланс =====
+                try:
+                    live = compute_balance(client)
+                    card   = live.get("Карта", Decimal("0"))
+                    cash   = live.get("Наличные", Decimal("0"))
+                    frozen = live.get("Заморожено", Decimal("0"))
+
+                    total_money = card + cash
+                    free_total  = total_money - frozen
+
+                    balance_line = (
+                        f"📊 Баланс: "
+                        f"💼 {_fmt_amount(free_total)} свободно | "
+                        f"💰 {_fmt_amount(total_money)} всего | "
+                        f"💳 {_fmt_amount(card)} | "
+                        f"💵 {_fmt_amount(cash)} | "
+                        f"🧊 {_fmt_amount(frozen)}"
+                    )
+                except Exception as e:
+                    logger.error(f"service balance error: {e}")
+                    balance_line = ""
+
+                # ===== формирование сообщения =====
+
+                lines = [
+                    "🛠️ Услуга добавлена",
+                    f"🚗 {car_name} (VIN: {car_vin or '—'})",
+                    f"💰 {amount_txt}",
+                    f"🧮 Услуг по машине всего: {total_services_txt}",
+                ]
+
+                if desc:
+                    lines.append(f"📝 {desc}")
+
+                if balance_line:
+                    lines.append(balance_line)
+
+                msg = "\n".join(lines)
                 await context.bot.send_message(chat_id=REMINDER_CHAT_ID, text=msg)
             except Exception as e:
                 logger.error(f"send group service error: {e}")
+
 
             context.user_data.clear()
             kb = InlineKeyboardMarkup([
