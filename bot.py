@@ -133,6 +133,43 @@ def get_services_recent_for_car(client, car_id: str, limit: int = 5):
     # берём последние по порядку добавления
     return items[-limit:][::-1]
 
+def get_workshop_records_for_car(client, car_id: str):
+    """
+    Все записи по машине из Мастерская_Данные:
+    и услуги, и заморозка (купленные запчасти).
+    Возвращает список словарей с row_index, kind, date, source, amount, desc.
+    """
+    ws = _ensure_workshop_unified_ws(client)
+    rows = ws.get_all_values()
+    items = []
+
+    # rows[0] — шапка, данные с 2-й строки
+    for i, r in enumerate(rows[1:], start=2):
+        if not r or len(r) < 8:
+            continue
+        if (r[2] or "").strip() != str(car_id):
+            continue
+
+        kind = (r[0] or "").strip()
+        if kind not in ("Услуга", "Заморозка"):
+            continue
+
+        date   = (r[5] if len(r) > 5 else "") or ""
+        source = (r[6] if len(r) > 6 else "") or ""
+        amt    = _to_amount(r[7])
+        desc   = (r[8] if len(r) > 8 else "-") or "-"
+
+        items.append({
+            "row_index": i,   # реальный номер строки в листе
+            "kind":      kind,
+            "date":      date,
+            "source":    source,
+            "amount":    amt,
+            "desc":      desc,
+        })
+
+    return items
+
 def get_services_total_for_car(client, car_id: str) -> Decimal:
     """
     Сумма всех услуг по машине.
@@ -1348,6 +1385,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("🧾 Купить запчасти", callback_data=f"workshop_buy_parts:{car_id}")],
                 [InlineKeyboardButton("🛠️ Добавить услугу", callback_data=f"workshop_add_service:{car_id}")],
                 [InlineKeyboardButton(f"📜 Все услуги ({services_count})", callback_data=f"workshop_services:{car_id}:page0")],
+                [InlineKeyboardButton("✏️ Редактировать записи", callback_data=f"workshop_edit:{car_id}")],
                 [InlineKeyboardButton("✅ Завершить ремонт", callback_data=f"workshop_finish:{car_id}")],
                 [InlineKeyboardButton("⬅️ Назад", callback_data="workshop")],
             ])
@@ -1356,6 +1394,172 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"workshop_view error: {e}")
             await query.message.reply_text("⚠️ Не удалось открыть карточку машины.")
+        return
+    
+    elif data.startswith("workshop_edit:"):
+        # формат: workshop_edit:<car_id>
+        car_id = data.split(":", 1)[1]
+        try:
+            client = get_gspread_client()
+            records = get_workshop_records_for_car(client, car_id)
+
+            if not records:
+                kb = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅️ К машине", callback_data=f"workshop_view:{car_id}")],
+                    [InlineKeyboardButton("⬅️ К списку", callback_data="workshop")],
+                ])
+                await query.edit_message_text(
+                    "По этой машине пока нет услуг и покупок запчастей.",
+                    reply_markup=kb
+                )
+                return
+
+            context.user_data["edit_car_id"] = car_id
+
+            buttons = []
+            for rec in records:
+                kind = rec["kind"]
+                prefix = "🛠️" if kind == "Услуга" else "🧊"
+                amt_txt = _fmt_amount(rec["amount"])
+                short_desc = rec["desc"]
+                if len(short_desc) > 20:
+                    short_desc = short_desc[:20] + "…"
+                btn_text = f"{prefix} {rec['date']} • {amt_txt} • {short_desc}"
+                buttons.append([
+                    InlineKeyboardButton(
+                        btn_text,
+                        callback_data=f"workshop_edit_item:{rec['row_index']}"
+                    )
+                ])
+
+            buttons.append([InlineKeyboardButton("⬅️ Назад к машине", callback_data=f"workshop_view:{car_id}")])
+
+            await query.edit_message_text(
+                "✏️ Выберите запись для редактирования или удаления:",
+                reply_markup=InlineKeyboardMarkup(buttons)
+            )
+        except Exception as e:
+            logger.error(f"workshop_edit list error: {e}")
+            await query.message.reply_text("⚠️ Не удалось загрузить список записей.")
+        return
+    
+    elif data.startswith("workshop_edit_item:"):
+        # формат: workshop_edit_item:<row_index>
+        try:
+            row_index = int(data.split(":", 1)[1])
+        except Exception:
+            await query.message.reply_text("⚠️ Неверные данные записи.")
+            return
+
+        try:
+            client = get_gspread_client()
+            ws = _ensure_workshop_unified_ws(client)
+            row = ws.row_values(row_index)
+
+            kind   = (row[0] if len(row) > 0 else "").strip()
+            car_id = (row[2] if len(row) > 2 else "").strip()
+            date   = (row[5] if len(row) > 5 else "").strip()
+            source = (row[6] if len(row) > 6 else "").strip()
+            amount = _to_amount(row[7] if len(row) > 7 else "0")
+            desc   = (row[8] if len(row) > 8 else "-").strip() or "-"
+
+            context.user_data["edit_row_index"] = row_index
+            context.user_data["edit_car_id"]    = car_id
+            context.user_data["edit_kind"]      = kind
+            context.user_data["edit_amount"]    = amount
+            context.user_data["edit_source"]    = source
+            context.user_data["edit_desc"]      = desc
+
+            text = (
+                f"Тип: <b>{kind}</b>\n"
+                f"Дата: <b>{date or '—'}</b>\n"
+                f"Источник: <b>{source or '—'}</b>\n"
+                f"Сумма: <b>{_fmt_amount(amount)}</b>\n"
+                f"Описание: <b>{desc}</b>\n\n"
+                f"Что сделать с этой записью?"
+            )
+
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("✏️ Изменить", callback_data=f"workshop_edit_change:{row_index}")],
+                [InlineKeyboardButton("🗑 Удалить", callback_data=f"workshop_edit_delete:{row_index}")],
+                [InlineKeyboardButton("⬅️ Назад к списку", callback_data=f"workshop_edit:{car_id}")],
+            ])
+            await query.edit_message_text(text, reply_markup=kb, parse_mode="HTML")
+        except Exception as e:
+            logger.error(f"workshop_edit_item error: {e}")
+            await query.message.reply_text("⚠️ Не удалось открыть запись.")
+        return
+    
+    elif data.startswith("workshop_edit_delete:"):
+        # формат: workshop_edit_delete:<row_index>
+        try:
+            row_index = int(data.split(":", 1)[1])
+        except Exception:
+            await query.message.reply_text("⚠️ Неверные данные для удаления.")
+            return
+
+        try:
+            client = get_gspread_client()
+            ws = _ensure_workshop_unified_ws(client)
+            rows = ws.get_all_values()
+            car_id = ""
+            if 1 <= row_index <= len(rows):
+                r = rows[row_index - 1]
+                if len(r) > 2:
+                    car_id = (r[2] or "").strip()
+
+            ws.delete_rows(row_index)
+
+            if not car_id:
+                car_id = context.user_data.get("edit_car_id", "")
+
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ К списку записей", callback_data=f"workshop_edit:{car_id}")],
+                [InlineKeyboardButton("⬅️ К машине", callback_data=f"workshop_view:{car_id}")],
+            ])
+            await query.edit_message_text("✅ Запись удалена.", reply_markup=kb)
+        except Exception as e:
+            logger.error(f"workshop_edit_delete error: {e}")
+            await query.message.reply_text("⚠️ Не удалось удалить запись.")
+        return
+    
+    elif data.startswith("workshop_edit_change:"):
+        # формат: workshop_edit_change:<row_index>
+        try:
+            row_index = int(data.split(":", 1)[1])
+        except Exception:
+            await query.message.reply_text("⚠️ Неверные данные для изменения.")
+            return
+
+        try:
+            client = get_gspread_client()
+            ws = _ensure_workshop_unified_ws(client)
+            row = ws.row_values(row_index)
+
+            kind   = (row[0] if len(row) > 0 else "").strip()
+            car_id = (row[2] if len(row) > 2 else "").strip()
+            date   = (row[5] if len(row) > 5 else "").strip()
+            source = (row[6] if len(row) > 6 else "").strip()
+            amount = _to_amount(row[7] if len(row) > 7 else "0")
+            desc   = (row[8] if len(row) > 8 else "-").strip() or "-"
+
+            context.user_data["action"]       = "ws_edit"
+            context.user_data["step"]         = "ws_edit_amount"
+            context.user_data["edit_row"]     = row_index
+            context.user_data["edit_car_id"]  = car_id
+            context.user_data["edit_kind"]    = kind
+            context.user_data["edit_amount"]  = amount
+            context.user_data["edit_source"]  = source
+            context.user_data["edit_desc"]    = desc
+
+            await query.edit_message_text(
+                f"Текущая сумма: <b>{_fmt_amount(amount)}</b>\n"
+                f"Отправьте новую сумму или '-' чтобы оставить как есть.",
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            logger.error(f"workshop_edit_change start error: {e}")
+            await query.message.reply_text("⚠️ Не удалось начать изменение записи.")
         return
 
     elif data.startswith("workshop_buy_parts:"):
@@ -2610,7 +2814,99 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
             await update.message.reply_text("✅ Покупка запчастей сохранена.", reply_markup=kb)
             return
 
-    # === МАСТЕРСКАЯ: добавление услуги ===
+    if context.user_data.get("action") == "ws_edit":
+        step = context.user_data.get("step")
+
+        # Шаг 1 — новая сумма
+        if step == "ws_edit_amount":
+            raw = (update.message.text or "").replace(",", ".").strip()
+            if raw != "-":
+                try:
+                    amt = _to_amount(raw)
+                    if amt <= 0:
+                        raise ValueError
+                    context.user_data["edit_amount"] = amt
+                except Exception:
+                    await update.message.reply_text(
+                        "❗ Введите сумму числом, например: 1500 или '-' чтобы оставить как есть."
+                    )
+                    return
+
+            kind = context.user_data.get("edit_kind", "Услуга")
+            if kind == "Заморозка":
+                src = context.user_data.get("edit_source") or "Карта"
+                await update.message.reply_text(
+                    f"Текущий источник: {src or '—'}\n"
+                    "Отправьте новый источник (Карта/Наличные) или '-' чтобы оставить."
+                )
+                context.user_data["step"] = "ws_edit_source"
+            else:
+                desc = context.user_data.get("edit_desc") or "-"
+                await update.message.reply_text(
+                    f"Текущее описание: {desc}\n"
+                    "Отправьте новое описание или '-' чтобы оставить."
+                )
+                context.user_data["step"] = "ws_edit_desc"
+            return
+
+        # Шаг 2 — источник (только для заморозки)
+        if step == "ws_edit_source":
+            raw = (update.message.text or "").strip()
+            if raw != "-":
+                src = _ws_norm_source(raw)
+                if not src:
+                    await update.message.reply_text(
+                        "❗ Укажите 'Карта', 'Наличные' или '-' чтобы оставить как есть."
+                    )
+                    return
+                context.user_data["edit_source"] = src
+
+            desc = context.user_data.get("edit_desc") or "-"
+            await update.message.reply_text(
+                f"Текущее описание: {desc}\n"
+                "Отправьте новое описание или '-' чтобы оставить."
+            )
+            context.user_data["step"] = "ws_edit_desc"
+            return
+
+        # Шаг 3 — описание (для обоих типов)
+        if step == "ws_edit_desc":
+            raw = (update.message.text or "").strip()
+            if raw != "-":
+                context.user_data["edit_desc"] = raw or "-"
+
+            row_index = context.user_data.get("edit_row")
+            car_id    = context.user_data.get("edit_car_id")
+            try:
+                client = get_gspread_client()
+                ws = _ensure_workshop_unified_ws(client)
+
+                from decimal import Decimal
+                amount = context.user_data.get("edit_amount", Decimal("0"))
+                source = context.user_data.get("edit_source", "")
+                desc   = context.user_data.get("edit_desc", "-")
+
+                # колонки: 7 = Источник, 8 = Сумма, 9 = Описание
+                if source is not None:
+                    ws.update_cell(row_index, 7, source)
+                ws.update_cell(row_index, 8, str(amount.quantize(Decimal("0.01"))))
+                ws.update_cell(row_index, 9, desc or "-")
+
+                kb = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅️ К списку записей", callback_data=f"workshop_edit:{car_id}")],
+                    [InlineKeyboardButton("⬅️ К машине", callback_data=f"workshop_view:{car_id}")],
+                ])
+                await update.message.reply_text("✅ Запись обновлена.", reply_markup=kb)
+            except Exception as e:
+                logger.error(f"ws_edit save error: {e}")
+                await update.message.reply_text("⚠️ Не удалось сохранить изменения.")
+            finally:
+                for key in ["action", "step", "edit_row", "edit_car_id",
+                            "edit_kind", "edit_amount", "edit_source", "edit_desc",
+                            "edit_row_index"]:
+                    context.user_data.pop(key, None)
+            return
+        
     if context.user_data.get("action") == "ws_service":
         step = context.user_data.get("step")
 
