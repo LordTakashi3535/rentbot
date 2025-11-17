@@ -3768,7 +3768,7 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
             if action == "income":
                 sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Доход")
                 sheet.append_row(row, value_input_option="USER_ENTERED", table_range="A:F")
-                money_line = f"💰 {amount} ({source})"
+                money_line = f"💰 {_fmt_amount(amount)} ({source})"
                 text_msg = (
                     f"✅ Добавлено в *Доход*:\n"
                     f"📅 {now}\n"
@@ -3779,7 +3779,7 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
             else:
                 sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Расход")
                 sheet.append_row(row, value_input_option="USER_ENTERED", table_range="A:F")
-                money_line = f"💸 -{amount} ({source})"
+                money_line = f"💸 -{_fmt_amount(amount)} ({source})"
                 text_msg = (
                     f"✅ Добавлено в *Расход*:\n"
                     f"📅 {now}\n"
@@ -3788,37 +3788,37 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
                     f"📝 {description}"
                 )
 
-            # Баланс
+            # ===== Баланс для пользователя =====
             live = compute_balance(client)
+
+            card   = live.get("Карта", Decimal("0"))
+            cash   = live.get("Наличные", Decimal("0"))
+            frozen = live.get("Заморожено", Decimal("0"))
+
+            total_money = card + cash          # всего денег на счетах (карта+наличные)
+            free_total  = total_money - frozen # свободно с учётом заморозки
+
             text_msg += (
                 f"\n\n📊 Баланс:\n"
-                f"💼 {_fmt_amount(live['Баланс'])}\n"
-                f"💳 {_fmt_amount(live['Карта'])}\n"
-                f"💵 {_fmt_amount(live['Наличные'])}"
+                f"💼 {_fmt_amount(free_total)} — свободно (с учётом заморозки)\n"
+                f"💰 {_fmt_amount(total_money)} — всего на счетах (карта+наличные)\n"
+                f"💳 {_fmt_amount(card)} — на карте\n"
+                f"💵 {_fmt_amount(cash)} — наличные\n"
+                f"🧊 {_fmt_amount(frozen)} — заморожено"
             )
 
             kb = InlineKeyboardMarkup([
                 [InlineKeyboardButton("📥 Доход",  callback_data="income"),
-                InlineKeyboardButton("📤 Расход", callback_data="expense")],
+                 InlineKeyboardButton("📤 Расход", callback_data="expense")],
                 [InlineKeyboardButton("⬅️ Назад", callback_data="menu")],
             ])
             context.user_data.clear()
             await update.message.reply_text(text_msg, reply_markup=kb, parse_mode="Markdown")
 
-            # Короткое сообщение в канал (группа)
+            # ===== Короткое сообщение в канал (группа) =====
             try:
-                from decimal import Decimal
-
                 source_emoji = "💳" if source == "Карта" else "💵"
                 desc_q = f' “{description}”' if description and description != "-" else ""
-
-                # live уже посчитан выше: live = compute_balance(client)
-                card   = live.get("Карта", Decimal("0"))
-                cash   = live.get("Наличные", Decimal("0"))
-                frozen = live.get("Заморожено", Decimal("0"))
-
-                total_money = card + cash                      # всего денег на счетах
-                free_total  = total_money - frozen             # свободно с учётом заморозки
 
                 balance_line = (
                     f"Баланс: "
