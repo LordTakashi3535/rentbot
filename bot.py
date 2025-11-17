@@ -3213,133 +3213,6 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
             await update.message.reply_text("⚠️ Введите положительное число (пример: 1200.50)")
         return
 
-    # ====== ШАГ ВВОДА ОПИСАНИЯ ======
-    if step == "description":
-        description = text or "-"
-        now = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
-
-        amount   = context.user_data.get("amount")
-        source   = (context.user_data.get("source") or "").strip()
-        cat_id   = context.user_data.get("category_id")
-        cat_name = context.user_data.get("category")
-
-        # защита: если нет источника/суммы — вернём пользователя на нужный шаг
-        if source not in ("Карта", "Наличные"):
-            await _ask_source(update, context)
-            return
-        if amount is None:
-            context.user_data["step"] = "amount"
-            await update.message.reply_text("Введите сумму:")
-            return
-
-        # если категории нет — тихо ставим «Другое» нужного типа
-        try:
-            if not cat_id or not cat_name:
-                if action == "income":
-                    cat_id, cat_name = ensure_default_category("Доход")
-                else:
-                    cat_id, cat_name = ensure_default_category("Расход")
-        except Exception as e:
-            logger.error(f"ensure_default_category error: {e}")
-            cat_id, cat_name = "", "Другое"
-
-        # запись в лист
-        try:
-            client = get_gspread_client()
-            ws_name = "Доход" if action == "income" else "Расход"
-            ws = client.open_by_key(SPREADSHEET_ID).worksheet(ws_name)
-
-            # строка нового формата:
-            # [Дата, КатегорияID, Категория, 💳 Карта, 💵 Наличные, 📝 Описание]
-            row = [now, cat_id, cat_name, "", "", description]
-            q   = str(amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
-            if source == "Карта":
-                row[3] = q
-            else:
-                row[4] = q
-
-            # Чтобы не упираться в пустой лист — можно без table_range,
-            # но если хочешь, оставь A:F
-            ws.append_row(row, value_input_option="USER_ENTERED")
-
-            # ===== Баланс для пользователя =====
-            from decimal import Decimal
-
-            live = compute_balance(client)
-
-            # безопасное получение значений
-            card   = Decimal(str(live.get("Карта", 0)))
-            cash   = Decimal(str(live.get("Наличные", 0)))
-            frozen = Decimal(str(live.get("Заморожено", 0)))  # даже если ключа нет — не упадёт
-
-            total_money = card + cash
-            free_total  = total_money - frozen
-
-            text_msg += (
-                f"\n\n📊 Баланс:\n"
-                f"💼 {_fmt_amount(free_total)} — свободно (с учётом заморозки)\n"
-                f"💰 {_fmt_amount(total_money)} — всего на счетах\n"
-                f"💳 {_fmt_amount(card)} — на карте\n"
-                f"💵 {_fmt_amount(cash)} — наличные\n"
-                f"🧊 {_fmt_amount(frozen)} — заморожено"
-            )
-
-            kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("📥 Доход",  callback_data="income"),
-                InlineKeyboardButton("📤 Расход", callback_data="expense")],
-                [InlineKeyboardButton("⬅️ Назад",  callback_data="menu")],
-            ])
-            context.user_data.clear()
-            await update.message.reply_text(text_msg, reply_markup=kb, parse_mode="Markdown")
-
-            # короткое сообщение в канал (группа)
-            try:
-                from decimal import Decimal
-
-                source_emoji = "💳" if source == "Карта" else "💵"
-                desc_q = f' “{description}”' if description and description != "-" else ""
-
-                # live уже посчитан выше: live = compute_balance(client)
-                card   = live.get("Карта", Decimal("0"))
-                cash   = live.get("Наличные", Decimal("0"))
-                frozen = live.get("Заморожено", Decimal("0"))
-
-                total_money = card + cash          # всего денег на счетах
-                free_total  = total_money - frozen # свободно с учётом заморозки
-
-                balance_line = (
-                    f"Баланс: "
-                    f"💼 {_fmt_amount(free_total)} свободно | "
-                    f"💰 {_fmt_amount(total_money)} всего | "
-                    f"💳 {_fmt_amount(card)} | "
-                    f"💵 {_fmt_amount(cash)} | "
-                    f"🧊 {_fmt_amount(frozen)}"
-                )
-
-                if action == "income":
-                    group_msg = (
-                        f"📥 Доход: {source_emoji} +{_fmt_amount(amount)} — {cat_name}{desc_q}\n"
-                        f"{balance_line}"
-                    )
-                else:
-                    group_msg = (
-                        f"📤 Расход: {source_emoji} -{_fmt_amount(amount)} — {cat_name}{desc_q}\n"
-                        f"{balance_line}"
-                    )
-
-                await context.bot.send_message(
-                    chat_id=REMINDER_CHAT_ID,
-                    text=group_msg,
-                    parse_mode="Markdown",
-                )
-            except Exception as e:
-                logger.error(f"Ошибка отправки в группу: {e}")
-
-        except Exception as e:
-            logger.error(f"WRITE ERROR: {e}")
-            await update.message.reply_text("⚠️ Ошибка записи в таблицу.")
-        return
-
     # --- Добавление категории из UI ---
     if context.user_data.get("action") == "cat_add":
         kind = context.user_data.get("kind")
@@ -3747,19 +3620,19 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
             await update.message.reply_text("⚠️ Введите положительное число (пример: 1200.50)")
         return
 
-
-    # -------- Шаг описания (ТОЛЬКО для доход/расход) --------
+        # ====== ШАГ ВВОДА ОПИСАНИЯ (Доход / Расход) ======
     if step == "description":
         description = text or "-"
         now = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
 
         amount   = context.user_data.get("amount")
-        source   = context.user_data.get("source", "").strip()
+        source   = (context.user_data.get("source") or "").strip()
         cat_id   = context.user_data.get("category_id")
         cat_name = context.user_data.get("category")
 
-        # ✅ Защита: если почему-то не выбрали источник — вернём пользователя на выбор
+        # защита: источник обязательно
         if source not in ("Карта", "Наличные"):
+            # вернём пользователя на выбор источника
             context.user_data["step"] = "source"
             kb = InlineKeyboardMarkup([
                 [InlineKeyboardButton("💳 Карта",    callback_data="source_card")],
@@ -3769,13 +3642,13 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
             await update.message.reply_text("Выберите источник:", reply_markup=kb)
             return
 
-        # ✅ Защита: сумма должна быть
+        # защита: сумма обязательна
         if amount is None:
             context.user_data["step"] = "amount"
             await update.message.reply_text("Введите сумму:")
             return
 
-        # Если категория не выбрана — используем дефолт «Другое»
+        # если категория не выбрана — подставляем «Другое» нужного типа
         try:
             if not cat_id or not cat_name:
                 if action == "income":
@@ -3787,73 +3660,75 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
             cat_id, cat_name = "", "Другое"
 
         try:
-            client = get_gspread_client()
+            from decimal import Decimal, ROUND_HALF_UP
 
-            # Новая строка: [Дата, КатегорияID, Категория, 💳 Карта, 💵 Наличные, 📝 Описание]
+            client  = get_gspread_client()
+            ws_name = "Доход" if action == "income" else "Расход"
+            ws      = client.open_by_key(SPREADSHEET_ID).worksheet(ws_name)
+
+            # строка нового формата:
+            # [Дата, КатегорияID, Категория, 💳 Карта, 💵 Наличные, 📝 Описание]
             row = [now, cat_id, cat_name, "", "", description]
             q   = str(amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
             if source == "Карта":
-                row[3] = q  # 💳 Карта
+                row[3] = q
             else:
-                row[4] = q  # 💵 Наличные
+                row[4] = q
 
-            if action == "income":
-                sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Доход")
-                sheet.append_row(row, value_input_option="USER_ENTERED", table_range="A:F")
-                money_line = f"💰 {_fmt_amount(amount)} ({source})"
-                text_msg = (
-                    f"✅ Добавлено в *Доход*:\n"
-                    f"📅 {now}\n"
-                    f"🏷 {cat_name}\n"
-                    f"{money_line}\n"
-                    f"📝 {description}"
-                )
-            else:
-                sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Расход")
-                sheet.append_row(row, value_input_option="USER_ENTERED", table_range="A:F")
-                money_line = f"💸 -{_fmt_amount(amount)} ({source})"
-                text_msg = (
-                    f"✅ Добавлено в *Расход*:\n"
-                    f"📅 {now}\n"
-                    f"{money_line}\n"
-                    f"🏷 {cat_name}\n"
-                    f"📝 {description}"
-                )
+            # пишем одну строку в лист
+            ws.append_row(row, value_input_option="USER_ENTERED")
 
-            # ===== Баланс для пользователя =====
+            # считаем баланс
             live = compute_balance(client)
-
-            card   = live.get("Карта", Decimal("0"))
-            cash   = live.get("Наличные", Decimal("0"))
+            card   = live.get("Карта",      Decimal("0"))
+            cash   = live.get("Наличные",   Decimal("0"))
             frozen = live.get("Заморожено", Decimal("0"))
 
-            total_money = card + cash          # всего денег на счетах (карта+наличные)
-            free_total  = total_money - frozen # свободно с учётом заморозки
+            total_money = card + cash            # всего на счетах
+            free_total  = total_money - frozen   # свободно с учётом заморозки
 
-            text_msg += (
+            # сообщение пользователю
+            header = "✅ Добавлено в *Доход*:" if action == "income" else "✅ Добавлено в *Расход*:"
+            money  = (
+                f"💰 {_fmt_amount(amount)} ({source})"
+                if action == "income"
+                else f"💸 -{_fmt_amount(amount)} ({source})"
+            )
+
+            text_msg = (
+                f"{header}\n"
+                f"📅 {now}\n"
+                f"🏷 {cat_name}\n"
+                f"{money}\n"
+                f"📝 {description}"
                 f"\n\n📊 Баланс:\n"
-                f"💼 {_fmt_amount(free_total)} — свободно (с учётом заморозки)\n"
-                f"💰 {_fmt_amount(total_money)} — всего на счетах (карта+наличные)\n"
-                f"💳 {_fmt_amount(card)} — на карте\n"
-                f"💵 {_fmt_amount(cash)} — наличные\n"
-                f"🧊 {_fmt_amount(frozen)} — заморожено"
+                f"💼 {_fmt_amount(free_total)} свободно\n"
+                f"💰 {_fmt_amount(total_money)} всего\n"
+                f"💳 {_fmt_amount(card)}\n"
+                f"💵 {_fmt_amount(cash)}\n"
+                f"🧊 {_fmt_amount(frozen)} заморожено"
             )
 
             kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("📥 Доход",  callback_data="income"),
-                 InlineKeyboardButton("📤 Расход", callback_data="expense")],
+                [
+                    InlineKeyboardButton("📥 Доход",  callback_data="income"),
+                    InlineKeyboardButton("📤 Расход", callback_data="expense"),
+                ],
                 [InlineKeyboardButton("⬅️ Назад", callback_data="menu")],
             ])
             context.user_data.clear()
             await update.message.reply_text(text_msg, reply_markup=kb, parse_mode="Markdown")
 
-            # ===== Короткое сообщение в канал (группа) =====
+            # короткое сообщение в группу
             try:
                 source_emoji = "💳" if source == "Карта" else "💵"
                 desc_q = f' “{description}”' if description and description != "-" else ""
+                sign   = "+" if action == "income" else "-"
 
-                balance_line = (
+                group_msg = (
+                    f"{'📥 Доход' if action == 'income' else '📤 Расход'}: "
+                    f"{source_emoji} {sign}{_fmt_amount(amount)} — {cat_name}{desc_q}\n"
                     f"Баланс: "
                     f"💼 {_fmt_amount(free_total)} свободно | "
                     f"💰 {_fmt_amount(total_money)} всего | "
@@ -3861,18 +3736,6 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
                     f"💵 {_fmt_amount(cash)} | "
                     f"🧊 {_fmt_amount(frozen)}"
                 )
-
-                if action == "income":
-                    group_msg = (
-                        f"📥 Доход: {source_emoji} +{_fmt_amount(amount)} — {cat_name}{desc_q}\n"
-                        f"{balance_line}"
-                    )
-                else:
-                    group_msg = (
-                        f"📤 Расход: {source_emoji} -{_fmt_amount(amount)} — {cat_name}{desc_q}\n"
-                        f"{balance_line}"
-                    )
-
                 await context.bot.send_message(
                     chat_id=REMINDER_CHAT_ID,
                     text=group_msg,
