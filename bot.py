@@ -3115,11 +3115,11 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
                     f"🧮 Услуг по машине всего: {total_services_txt}",
                 ]
 
-                if desc:
-                    lines.append(f"📝 {desc}")
-
                 if balance_line:
                     lines.append(balance_line)
+
+                if desc:
+                    lines.append(f"📝 {desc}")    
 
                 msg = "\n".join(lines)
                 await context.bot.send_message(chat_id=REMINDER_CHAT_ID, text=msg)
@@ -3287,20 +3287,48 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
             context.user_data.clear()
             await update.message.reply_text(text_msg, reply_markup=kb, parse_mode="Markdown")
 
-            # короткое сообщение в канал (не критично, можно убрать)
+            # короткое сообщение в канал (группа)
             try:
+                from decimal import Decimal
+
                 source_emoji = "💳" if source == "Карта" else "💵"
-                sign = "+" if action == "income" else "-"
-                group_msg = (
-                    f"{'📥 Доход' if action=='income' else '📤 Расход'}: "
-                    f"{source_emoji} {sign}{_fmt_amount(amount)} — {cat_name}"
-                    + (f' “{description}”' if description and description != "-" else "")
-                    + "\n"
-                    f"Баланс: 💳 {_fmt_amount(live['Карта'])} | 💵 {_fmt_amount(live['Наличные'])}"
+                desc_q = f' “{description}”' if description and description != "-" else ""
+
+                # live уже посчитан выше: live = compute_balance(client)
+                card   = live.get("Карта", Decimal("0"))
+                cash   = live.get("Наличные", Decimal("0"))
+                frozen = live.get("Заморожено", Decimal("0"))
+
+                total_money = card + cash          # всего денег на счетах
+                free_total  = total_money - frozen # свободно с учётом заморозки
+
+                balance_line = (
+                    f"Баланс: "
+                    f"💼 {_fmt_amount(free_total)} свободно | "
+                    f"💰 {_fmt_amount(total_money)} всего | "
+                    f"💳 {_fmt_amount(card)} | "
+                    f"💵 {_fmt_amount(cash)} | "
+                    f"🧊 {_fmt_amount(frozen)}"
                 )
-                await context.bot.send_message(chat_id=REMINDER_CHAT_ID, text=group_msg, parse_mode="Markdown")
+
+                if action == "income":
+                    group_msg = (
+                        f"📥 Доход: {source_emoji} +{_fmt_amount(amount)} — {cat_name}{desc_q}\n"
+                        f"{balance_line}"
+                    )
+                else:
+                    group_msg = (
+                        f"📤 Расход: {source_emoji} -{_fmt_amount(amount)} — {cat_name}{desc_q}\n"
+                        f"{balance_line}"
+                    )
+
+                await context.bot.send_message(
+                    chat_id=REMINDER_CHAT_ID,
+                    text=group_msg,
+                    parse_mode="Markdown",
+                )
             except Exception as e:
-                logger.error(f"send group error: {e}")
+                logger.error(f"Ошибка отправки в группу: {e}")
 
         except Exception as e:
             logger.error(f"WRITE ERROR: {e}")
