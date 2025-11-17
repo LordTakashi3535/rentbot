@@ -3263,20 +3263,22 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
             ws.append_row(row, value_input_option="USER_ENTERED")
 
             # ===== Баланс для пользователя =====
+            from decimal import Decimal
+
             live = compute_balance(client)
 
-            from decimal import Decimal
-            card   = live.get("Карта", Decimal("0"))
-            cash   = live.get("Наличные", Decimal("0"))
-            frozen = live.get("Заморожено", Decimal("0"))
+            # безопасное получение значений
+            card   = Decimal(str(live.get("Карта", 0)))
+            cash   = Decimal(str(live.get("Наличные", 0)))
+            frozen = Decimal(str(live.get("Заморожено", 0)))  # даже если ключа нет — не упадёт
 
-            total_money = card + cash          # всего денег на счетах (карта+наличные)
-            free_total  = total_money - frozen # свободно с учётом заморозки
+            total_money = card + cash
+            free_total  = total_money - frozen
 
             text_msg += (
                 f"\n\n📊 Баланс:\n"
                 f"💼 {_fmt_amount(free_total)} — свободно (с учётом заморозки)\n"
-                f"💰 {_fmt_amount(total_money)} — всего на счетах (карта+наличные)\n"
+                f"💰 {_fmt_amount(total_money)} — всего на счетах\n"
                 f"💳 {_fmt_amount(card)} — на карте\n"
                 f"💵 {_fmt_amount(cash)} — наличные\n"
                 f"🧊 {_fmt_amount(frozen)} — заморожено"
