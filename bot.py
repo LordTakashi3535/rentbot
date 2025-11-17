@@ -3262,21 +3262,24 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
             # но если хочешь, оставь A:F
             ws.append_row(row, value_input_option="USER_ENTERED")
 
-            # баланс
+            # ===== Баланс для пользователя =====
             live = compute_balance(client)
 
-            header = "✅ Добавлено в *Доход*:" if action == "income" else "✅ Добавлено в *Расход*:"
-            money  = f"💰 {amount} ({source})" if action == "income" else f"💸 -{amount} ({source})"
-            text_msg = (
-                f"{header}\n"
-                f"📅 {now}\n"
-                f"🏷 {cat_name}\n"
-                f"{money}\n"
-                f"📝 {description}"
+            from decimal import Decimal
+            card   = live.get("Карта", Decimal("0"))
+            cash   = live.get("Наличные", Decimal("0"))
+            frozen = live.get("Заморожено", Decimal("0"))
+
+            total_money = card + cash          # всего денег на счетах (карта+наличные)
+            free_total  = total_money - frozen # свободно с учётом заморозки
+
+            text_msg += (
                 f"\n\n📊 Баланс:\n"
-                f"💼 {_fmt_amount(live['Баланс'])}\n"
-                f"💳 {_fmt_amount(live['Карта'])}\n"
-                f"💵 {_fmt_amount(live['Наличные'])}"
+                f"💼 {_fmt_amount(free_total)} — свободно (с учётом заморозки)\n"
+                f"💰 {_fmt_amount(total_money)} — всего на счетах (карта+наличные)\n"
+                f"💳 {_fmt_amount(card)} — на карте\n"
+                f"💵 {_fmt_amount(cash)} — наличные\n"
+                f"🧊 {_fmt_amount(frozen)} — заморожено"
             )
 
             kb = InlineKeyboardMarkup([
