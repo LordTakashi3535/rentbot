@@ -1603,6 +1603,25 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
         return
+    
+    elif data.startswith("ws_edit_src:"):
+        action = data.split(":", 1)[1]
+
+        if action == "card":
+            context.user_data["edit_source"] = "Карта"
+        elif action == "cash":
+            context.user_data["edit_source"] = "Наличные"
+        elif action == "skip":
+            pass  # оставить старый
+
+        desc = context.user_data.get("edit_desc") or "-"
+
+        await query.edit_message_text(
+            f"Текущее описание: {desc}\n"
+            "Отправьте новое описание или '-' чтобы оставить."
+        )
+        context.user_data["step"] = "ws_edit_desc"
+        return
 
     elif data.startswith("workshop_finish:"):
         car_id = data.split(":", 1)[1]
@@ -2849,24 +2868,21 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
                 context.user_data["step"] = "ws_edit_desc"
             return
 
-        # Шаг 2 — источник (только для заморозки)
-        if step == "ws_edit_source":
-            raw = (update.message.text or "").strip()
-            if raw != "-":
-                src = _ws_norm_source(raw)
-                if not src:
-                    await update.message.reply_text(
-                        "❗ Укажите 'Карта', 'Наличные' или '-' чтобы оставить как есть."
-                    )
-                    return
-                context.user_data["edit_source"] = src
+        if kind == "Заморозка":
+            src = context.user_data.get("edit_source") or "Карта"
 
-            desc = context.user_data.get("edit_desc") or "-"
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("💳 Карта", callback_data="ws_edit_src:card")],
+                [InlineKeyboardButton("💵 Наличные", callback_data="ws_edit_src:cash")],
+                [InlineKeyboardButton("⏭ Оставить без изменений", callback_data="ws_edit_src:skip")],
+            ])
+
             await update.message.reply_text(
-                f"Текущее описание: {desc}\n"
-                "Отправьте новое описание или '-' чтобы оставить."
+                f"Текущий источник: <b>{src}</b>\nВыберите новый:",
+                reply_markup=kb,
+                parse_mode="HTML"
             )
-            context.user_data["step"] = "ws_edit_desc"
+            context.user_data["step"] = "ws_edit_source"
             return
 
         # Шаг 3 — описание (для обоих типов)
