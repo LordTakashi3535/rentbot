@@ -1605,6 +1605,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     elif data.startswith("ws_edit_src:"):
+        # выбор источника при редактировании записи мастерской
         action = data.split(":", 1)[1]
 
         if action == "card":
@@ -1612,7 +1613,8 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif action == "cash":
             context.user_data["edit_source"] = "Наличные"
         elif action == "skip":
-            pass  # оставить старый
+            # оставить старый источник — ничего не меняем
+            pass
 
         desc = context.user_data.get("edit_desc") or "-"
 
@@ -1620,6 +1622,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Текущее описание: {desc}\n"
             "Отправьте новое описание или '-' чтобы оставить."
         )
+        # дальше ждём текст описания
         context.user_data["step"] = "ws_edit_desc"
         return
 
@@ -2851,28 +2854,11 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
                     )
                     return
 
-            kind = context.user_data.get("edit_kind", "Услуга")
-            if kind == "Заморозка":
-                src = context.user_data.get("edit_source") or "Карта"
-                await update.message.reply_text(
-                    f"Текущий источник: {src or '—'}\n"
-                    "Отправьте новый источник (Карта/Наличные) или '-' чтобы оставить."
-                )
-                context.user_data["step"] = "ws_edit_source"
-            else:
-                desc = context.user_data.get("edit_desc") or "-"
-                await update.message.reply_text(
-                    f"Текущее описание: {desc}\n"
-                    "Отправьте новое описание или '-' чтобы оставить."
-                )
-                context.user_data["step"] = "ws_edit_desc"
-            return
-
-        if kind == "Заморозка":
+            # независимо от типа (Услуга / Заморозка) спрашиваем источник кнопками
             src = context.user_data.get("edit_source") or "Карта"
 
             kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("💳 Карта", callback_data="ws_edit_src:card")],
+                [InlineKeyboardButton("💳 Карта",    callback_data="ws_edit_src:card")],
                 [InlineKeyboardButton("💵 Наличные", callback_data="ws_edit_src:cash")],
                 [InlineKeyboardButton("⏭ Оставить без изменений", callback_data="ws_edit_src:skip")],
             ])
@@ -2880,8 +2866,9 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
             await update.message.reply_text(
                 f"Текущий источник: <b>{src}</b>\nВыберите новый:",
                 reply_markup=kb,
-                parse_mode="HTML"
+                parse_mode="HTML",
             )
+            # дальше выбор источника пойдёт через callback
             context.user_data["step"] = "ws_edit_source"
             return
 
@@ -2910,16 +2897,18 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
 
                 kb = InlineKeyboardMarkup([
                     [InlineKeyboardButton("⬅️ К списку записей", callback_data=f"workshop_edit:{car_id}")],
-                    [InlineKeyboardButton("⬅️ К машине", callback_data=f"workshop_view:{car_id}")],
+                    [InlineKeyboardButton("⬅️ К машине",         callback_data=f"workshop_view:{car_id}")],
                 ])
                 await update.message.reply_text("✅ Запись обновлена.", reply_markup=kb)
             except Exception as e:
                 logger.error(f"ws_edit save error: {e}")
                 await update.message.reply_text("⚠️ Не удалось сохранить изменения.")
             finally:
-                for key in ["action", "step", "edit_row", "edit_car_id",
-                            "edit_kind", "edit_amount", "edit_source", "edit_desc",
-                            "edit_row_index"]:
+                for key in [
+                    "action", "step", "edit_row", "edit_car_id",
+                    "edit_kind", "edit_amount", "edit_source", "edit_desc",
+                    "edit_row_index",
+                ]:
                     context.user_data.pop(key, None)
             return
         
