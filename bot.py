@@ -1883,12 +1883,44 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logger.warning(f"Не удалось удалить машину из Мастерская: {e}")
 
-            # 6. сообщение
-            txt = [f"✅ Ремонт завершён: {car_name}"]
-            if frozen_from_card or frozen_from_cash:
-                txt.append(f"🧊 Заморозка возвращена → {dest_frozen}")
+            # ===== 5. Сообщение и финал =====
+            txt = [
+                f"✅ Ремонт завершён: {car_name}",
+            ]
+
+            # Общая разморозка (с карты и наличных вместе)
+            total_frozen = frozen_from_card + frozen_from_cash
+            if total_frozen > 0:
+                txt.append(f"🧊 Разморозка: {_fmt_amount(total_frozen)} → {dest_frozen}")
+
+            # Доход по услугам
             if services_total > 0:
-                txt.append(f"🛠️ Доход по услугам: {services_total} → {dest_income}")
+                txt.append(f"🛠️ Доход по услугам: {_fmt_amount(services_total)} → {dest_income}")
+
+            # Итоговый баланс после ремонта
+            try:
+                from decimal import Decimal
+
+                live = compute_balance(client)
+
+                card   = live.get("Карта", Decimal("0"))
+                cash   = live.get("Наличные", Decimal("0"))
+                frozen = live.get("Заморожено", Decimal("0"))
+
+                total_money = card + cash
+                free_total  = total_money - frozen
+
+                txt.append(
+                    "📊 Баланс после ремонта:\n"
+                    f"💼 {_fmt_amount(free_total)} — свободно (с учётом заморозки)\n"
+                    f"💰 {_fmt_amount(total_money)} — всего на счетах (карта+наличные)\n"
+                    f"💳 {_fmt_amount(card)} — на карте\n"
+                    f"💵 {_fmt_amount(cash)} — наличные\n"
+                    f"🧊 {_fmt_amount(frozen)} — заморожено"
+                )
+            except Exception as e:
+                logger.error(f"finish compute_balance error: {e}")
+
             try:
                 await context.bot.send_message(chat_id=REMINDER_CHAT_ID, text="\n".join(txt))
             except Exception:
@@ -2814,27 +2846,69 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
 
             # сообщение в группу
             try:
+                from decimal import Decimal
+
                 try:
                     amount_txt = _fmt_amount(amount)
                 except Exception:
                     amount_txt = str(amount)
-                msg = (
-                    "🧾 Покупка запчастей\n"
-                    f"🚗 {car_name} (VIN: {car_vin})\n"
-                    f"💰 {amount_txt} → {source}\n"
-                    f"📝 {desc}"
-                )
+
+                # Итоги по заморозке и балансу
+                try:
+                    live = compute_balance(client)
+
+                    card   = live.get("Карта", Decimal("0"))
+                    cash   = live.get("Наличные", Decimal("0"))
+                    frozen = live.get("Заморожено", Decimal("0"))
+
+                    total_money = card + cash
+                    free_total  = total_money - frozen
+
+                    # заморозка по этой машине
+                    frozen_car = get_frozen_for_car(client, str(car_id))
+
+                    frozen_line = (
+                        f"🧊 Заморожено: по машине {_fmt_amount(frozen_car)}, "
+                        f"всего {_fmt_amount(frozen)}"
+                    )
+                    balance_line = (
+                        f"📊 Баланс: "
+                        f"💼 {_fmt_amount(free_total)} свободно | "
+                        f"💰 {_fmt_amount(total_money)} всего | "
+                        f"💳 {_fmt_amount(card)} | "
+                        f"💵 {_fmt_amount(cash)}"
+                    )
+                except Exception as e:
+                    logger.error(f"buy parts balance error: {e}")
+                    frozen_line = ""
+                    balance_line = ""
+
+                lines = [
+                    "🧊 Покупка запчастей (заморозка)",
+                    f"🚗 {car_name} (VIN: {car_vin})",
+                    f"💰 {amount_txt} → {source}",
+                ]
+                if frozen_line:
+                    lines.append(frozen_line)
+                if balance_line:
+                    lines.append(balance_line)
+                if desc:
+                    lines.append(f"📝 {desc}")
+
+                msg = "\n".join(lines)
                 await context.bot.send_message(chat_id=REMINDER_CHAT_ID, text=msg)
             except Exception as e:
                 logger.error(f"send group buy parts error: {e}")
 
             context.user_data.clear()
             kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🧾 Купить ещё запчастей", callback_data=f"workshop_buy_parts:{car_id}")],
                 [InlineKeyboardButton("⬅️ К машине", callback_data=f"workshop_view:{car_id}")],
                 [InlineKeyboardButton("⬅️ К списку", callback_data="workshop")],
             ])
             await update.message.reply_text("✅ Покупка запчастей сохранена.", reply_markup=kb)
             return
+
 
     if context.user_data.get("action") == "ws_edit":
         step = context.user_data.get("step")
@@ -2986,6 +3060,7 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
 
             context.user_data.clear()
             kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🛠️ Добавить ещё услугу", callback_data=f"workshop_add_service:{car_id}")],
                 [InlineKeyboardButton("⬅️ К машине", callback_data=f"workshop_view:{car_id}")],
                 [InlineKeyboardButton("⬅️ К списку", callback_data="workshop")],
             ])
@@ -3661,21 +3736,46 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
             context.user_data.clear()
             await update.message.reply_text(text_msg, reply_markup=kb, parse_mode="Markdown")
 
-            # Короткое сообщение в канал
+            # Короткое сообщение в канал (группа)
             try:
+                from decimal import Decimal
+
                 source_emoji = "💳" if source == "Карта" else "💵"
                 desc_q = f' “{description}”' if description and description != "-" else ""
+
+                # live уже посчитан выше: live = compute_balance(client)
+                card   = live.get("Карта", Decimal("0"))
+                cash   = live.get("Наличные", Decimal("0"))
+                frozen = live.get("Заморожено", Decimal("0"))
+
+                total_money = card + cash                      # всего денег на счетах
+                free_total  = total_money - frozen             # свободно с учётом заморозки
+
+                balance_line = (
+                    f"Баланс: "
+                    f"💼 {_fmt_amount(free_total)} свободно | "
+                    f"💰 {_fmt_amount(total_money)} всего | "
+                    f"💳 {_fmt_amount(card)} | "
+                    f"💵 {_fmt_amount(cash)} | "
+                    f"🧊 {_fmt_amount(frozen)}"
+                )
+
                 if action == "income":
                     group_msg = (
                         f"📥 Доход: {source_emoji} +{_fmt_amount(amount)} — {cat_name}{desc_q}\n"
-                        f"Баланс: 💳 {_fmt_amount(live['Карта'])} | 💵 {_fmt_amount(live['Наличные'])}"
+                        f"{balance_line}"
                     )
                 else:
                     group_msg = (
                         f"📤 Расход: {source_emoji} -{_fmt_amount(amount)} — {cat_name}{desc_q}\n"
-                        f"Баланс: 💳 {_fmt_amount(live['Карта'])} | 💵 {_fmt_amount(live['Наличные'])}"
+                        f"{balance_line}"
                     )
-                await context.bot.send_message(chat_id=REMINDER_CHAT_ID, text=group_msg, parse_mode="Markdown")
+
+                await context.bot.send_message(
+                    chat_id=REMINDER_CHAT_ID,
+                    text=group_msg,
+                    parse_mode="Markdown",
+                )
             except Exception as e:
                 logger.error(f"Ошибка отправки в группу: {e}")
 
