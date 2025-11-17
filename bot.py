@@ -1605,7 +1605,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     elif data.startswith("ws_edit_src:"):
-        # выбор источника при редактировании записи мастерской
+        # выбор источника при редактировании ЗАМОРОЗКИ
         action = data.split(":", 1)[1]
 
         if action == "card":
@@ -1622,7 +1622,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Текущее описание: {desc}\n"
             "Отправьте новое описание или '-' чтобы оставить."
         )
-        # дальше ждём текст описания
+        # теперь ждём текст описания
         context.user_data["step"] = "ws_edit_desc"
         return
 
@@ -2854,22 +2854,34 @@ async def handle_amount_description(update: Update, context: ContextTypes.DEFAUL
                     )
                     return
 
-            # независимо от типа (Услуга / Заморозка) спрашиваем источник кнопками
-            src = context.user_data.get("edit_source") or "Карта"
+            kind = context.user_data.get("edit_kind", "Услуга")
 
-            kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("💳 Карта",    callback_data="ws_edit_src:card")],
-                [InlineKeyboardButton("💵 Наличные", callback_data="ws_edit_src:cash")],
-                [InlineKeyboardButton("⏭ Оставить без изменений", callback_data="ws_edit_src:skip")],
-            ])
+            # Если это ЗАМОРОЗКА — спрашиваем ИСТОЧНИК КНОПКАМИ
+            if kind == "Заморозка":
+                src = context.user_data.get("edit_source") or "Карта"
 
+                kb = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("💳 Карта",    callback_data="ws_edit_src:card")],
+                    [InlineKeyboardButton("💵 Наличные", callback_data="ws_edit_src:cash")],
+                    [InlineKeyboardButton("⏭ Оставить без изменений", callback_data="ws_edit_src:skip")],
+                ])
+
+                await update.message.reply_text(
+                    f"Текущий источник: <b>{src}</b>\nВыберите новый:",
+                    reply_markup=kb,
+                    parse_mode="HTML",
+                )
+                # дальше обработка выбора источника пойдёт через callback
+                context.user_data["step"] = "ws_edit_source"
+                return
+
+            # Если это УСЛУГА — источник не спрашиваем, сразу описание
+            desc = context.user_data.get("edit_desc") or "-"
             await update.message.reply_text(
-                f"Текущий источник: <b>{src}</b>\nВыберите новый:",
-                reply_markup=kb,
-                parse_mode="HTML",
+                f"Текущее описание: {desc}\n"
+                "Отправьте новое описание или '-' чтобы оставить."
             )
-            # дальше выбор источника пойдёт через callback
-            context.user_data["step"] = "ws_edit_source"
+            context.user_data["step"] = "ws_edit_desc"
             return
 
         # Шаг 3 — описание (для обоих типов)
